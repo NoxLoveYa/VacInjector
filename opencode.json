@@ -1,0 +1,36 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "binja-codemode-mcp": {
+      "type": "local",
+      "command": ["C:\\Users\\Obnoxious\\AppData\\Local\\Programs\\Python\\Python313\\python.exe", "C:\\Users\\Obnoxious\\AppData\\Roaming\\Binary Ninja\\repositories\\community\\plugins\\akrutsinger_binja_codemode_mcp\\bridge\\mcp_bridge.py"],
+      "enabled": true,
+      "environment": {
+        "BINJA_MCP_URL": "http://127.0.0.1:42069",
+        "BINJA_MCP_KEY": "KRgtlDIk5ualf-YiqjvLknnPjvKehTgUD3CeuPkRHDc"
+      },
+      "timeout": 30000
+    }
+  },
+  "permission": {
+    "binja-codemode-mcp_*": "allow",
+    "doom_loop": "allow",
+    "skill": {
+      "*": "allow"
+    },
+    "bash": "allow",
+    "read": "allow",
+    "edit": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "task": "allow"
+  },
+  "agent": {
+    "build": {
+      "steps": 100000
+    }
+  },
+  "experimental": {
+    "mcp_timeout": 30000
+  }
+}
