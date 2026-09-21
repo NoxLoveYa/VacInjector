@@ -1,4 +1,5 @@
 #include "stealth.h"
+#include "peb.h"
 #include <windows.h>
 #include <winternl.h>
 #include <cstddef>
@@ -21,26 +22,8 @@ static constexpr uint32_t Djb2(const char* s) {
 static constexpr uint32_t kNtSetInfoThreadHash = Djb2("NtSetInformationThread");
 static constexpr uint32_t kNtProtectMemHash = Djb2("NtProtectVirtualMemory");
 
-// ---- minimal PEB/LDR walk (no imports: NtCurrentTeb is a GS-segment intrinsic) ----
-// NOTE: SDK winternl.h redacts these (only InMemoryOrderModuleList is public),
-// so we mirror the stable ABI layout. InMemoryOrder offset 0x20 verified against
-// the public header; InLoadOrder 0x10 / InInitOrder 0x30 are Coff-documented.
-struct MyPebLdr {
-  uint8_t pad0[16];
-  LIST_ENTRY InLoadOrderModuleList;   // +0x10
-  LIST_ENTRY InMemoryOrderModuleList; // +0x20
-  LIST_ENTRY InInitOrderModuleList;   // +0x30
-};
-struct LdrEntry {
-  LIST_ENTRY InLoadOrderLinks;   // +0x00
-  LIST_ENTRY InMemoryOrderLinks; // +0x10
-  LIST_ENTRY InInitOrderLinks;   // +0x20
-  void* DllBase;                 // +0x30
-  void* EntryPoint;              // +0x38
-  ULONG SizeOfImage;             // +0x40
-  UNICODE_STRING FullDllName;    // +0x48
-  UNICODE_STRING BaseDllName;    // +0x58
-};
+using peb::LdrData;
+using peb::LdrEntry;
 
 using NtSetInformationThreadFn = LONG (NTAPI*)(HANDLE, ULONG /*THREADINFOCLASS*/, void*, ULONG);
 using NtProtectVirtualMemoryFn = LONG (NTAPI*)(HANDLE, void**, SIZE_T*, ULONG, ULONG*);
@@ -48,7 +31,7 @@ using NtProtectVirtualMemoryFn = LONG (NTAPI*)(HANDLE, void**, SIZE_T*, ULONG, U
 static HMODULE FindModuleByName(const wchar_t* name /*lowercase, e.g. L"ntdll.dll"*/) {
   PEB* peb = NtCurrentTeb()->ProcessEnvironmentBlock;
   if (!peb || !peb->Ldr) return nullptr;
-  auto* ldr = (MyPebLdr*)peb->Ldr;
+  auto* ldr = (LdrData*)peb->Ldr;
   LIST_ENTRY* head = &ldr->InMemoryOrderModuleList;
   for (LIST_ENTRY* cur = head->Flink; cur != head; cur = cur->Flink) {
     auto* e = (LdrEntry*)((uint8_t*)cur - offsetof(LdrEntry, InMemoryOrderLinks));
@@ -133,7 +116,7 @@ static uint32_t UnlinkLdr(void* base) {
     PEB* peb = NtCurrentTeb()->ProcessEnvironmentBlock;
     if (!peb || !peb->Ldr) return kUnlinkLdr; // no LDR access: assume manual-mapped clean
     bool found = false;
-    auto* ldr = (MyPebLdr*)peb->Ldr;
+    auto* ldr = (LdrData*)peb->Ldr;
     LIST_ENTRY* head = &ldr->InLoadOrderModuleList;
     for (LIST_ENTRY* cur = head->Flink; cur != head; cur = cur->Flink) {
       auto* e = CONTAINING_RECORD(cur, LdrEntry, InLoadOrderLinks);
@@ -183,5 +166,7 @@ uint32_t ApplyPost(void* mappedBase) {
   // hijacked game thread or the transient CRT thread here.
   return mask;
 }
+
+uint32_t HideCurrentThreadPub() { return HideCurrentThread(); }
 
 } // namespace vacsafe::stealth

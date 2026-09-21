@@ -87,15 +87,20 @@ static bool HijackX64(HANDLE hProc, void* entry, void* arg, DWORD timeoutMs, std
   ULONGLONG deadline = GetTickCount64() + timeoutMs;
   bool verbose = (getenv("VACSAFE_VERBOSE") != nullptr);
   std::string lastErr = "no hijackable thread (all parked in syscalls)";
-  // Try each TID up to 3 stick attempts; per stuck thread poll flag up to 1200ms.
-  for (int ti = 0; ti < nTids; ++ti) {
+  // Budget: at most 8 TIDs x 2 attempts. Retries only help transient-syscall
+  // threads (a true waiter never unsticks); the old 64x3 storm suspended live
+  // game threads hundreds of times (render/audio/net stalls, watchdog risk).
+  int tried = 0;
+  for (int ti = 0; ti < nTids && tried < 8; ++ti) {
     if ((LONG64)(deadline - GetTickCount64()) <= 500) break;
     DWORD chosen = tids[ti];
     HANDLE hTh = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, chosen);
     if (!hTh) continue;
     CONTEXT orig{}; bool haveOrig = false;
 
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      ++tried;
+      if (tried > 16) break;
       if ((LONG64)(deadline - GetTickCount64()) <= 500) break;
       if (SuspendThread(hTh) == (DWORD)-1) break;
       CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_FULL;
@@ -161,21 +166,23 @@ static bool HijackX64(HANDLE hProc, void* entry, void* arg, DWORD timeoutMs, std
           }
         }
       }
-      // Restore original context regardless, reset flag for next candidate.
-      SuspendThread(hTh);
-      if (verbose && !done) {
-        uint8_t snap[64]{}; SIZE_T rr = 0;
-        uint32_t stage = 0xCCCCCCCC; SIZE_T sr = 0;
-        uint8_t fb = 0xCC; SIZE_T fr = 0;
-        BOOL ok = ReadProcessMemory(hProc, (LPCVOID)stubAddr, snap, sizeof(snap), &rr);
-        ReadProcessMemory(hProc, (LPCVOID)stageAddr, &stage, 4, &sr);
-        ReadProcessMemory(hProc, (LPCVOID)flagAddr, &fb, 1, &fr);
-        printf("[hijack] postmortem stage=%u flag=%u s0=%02X s42=%02X s43=%02X\n",
-               stage, fb, snap[0], snap[42], snap[43]);
+      // Restore original context with confirmation. If the thread cannot be
+      // verifiably restored, LEAK the stub (8KB) rather than freeing code that a
+      // live thread may still execute (use-after-free AV in unmapped memory).
+      bool restored = false;
+      for (int rs = 0; rs < 10 && !restored; ++rs) {
+        if (SuspendThread(hTh) == (DWORD)-1) { Sleep(5); continue; }
+        if (!SetThreadContext(hTh, &orig)) { ResumeThread(hTh); Sleep(5); continue; }
+        CONTEXT cf{}; cf.ContextFlags = CONTEXT_CONTROL;
+        if (GetThreadContext(hTh, &cf) && cf.Rip == orig.Rip && cf.Rsp == orig.Rsp) restored = true;
+        ResumeThread(hTh);
+        if (!restored) Sleep(5);
       }
-      SetThreadContext(hTh, &orig);
-      ResumeThread(hTh);
       CloseHandle(hTh);
+      if (!restored) {
+        err = "exec timeout (E_EXEC_TIMEOUT): thread unrestorable, stub leaked deliberately";
+        return false; // remote intentionally NOT freed
+      }
       VirtualFreeEx(hProc, remote, 0, MEM_RELEASE);
       if (done) return true;
       err = "exec timeout (E_EXEC_TIMEOUT): DllMain did not signal completion";

@@ -1,2 +1,2 @@
 #pragma once
-#define VACSAFE_BUILD_ID "3dbe5929c8924578"
+#define VACSAFE_BUILD_ID "5aafde6c0c3b51aa"

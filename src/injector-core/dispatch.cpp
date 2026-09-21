@@ -153,7 +153,9 @@ InjectResult Inject(const InjectorConfig& cfg) {
   }
   if (!called) {
     if (!r.ntstatus) r.ntstatus = VACSAFE_E_EXEC_TIMEOUT;
-    VirtualFreeEx(hProc, base, 0, MEM_RELEASE);
+    // Deliberate leak: entry may still be live (late DllMain). Freeing the image
+    // under it AVs in unmapped memory; 35KB leaked beats a dead game. Phase-08 reaper.
+    r.error += " (image leaked deliberately)";
     r.injectedBase = nullptr;
     CloseHandle(hProc);
     return r;

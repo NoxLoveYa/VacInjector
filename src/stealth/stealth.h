@@ -8,5 +8,7 @@ constexpr uint32_t kSpoofStart   = 1 << 2;
 constexpr uint32_t kHideThread   = 1 << 3;
 uint32_t ApplyPre();
 uint32_t ApplyPost(void* mappedBase);
+// Hides the CALLING thread from debuggers (payload worker threads call at start).
+uint32_t HideCurrentThreadPub();
 void Wipe(void* ptr, size_t len);
 } // namespace vacsafe::stealth

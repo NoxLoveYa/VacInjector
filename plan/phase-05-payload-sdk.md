@@ -30,6 +30,20 @@
 - [ ] Never hardcode absolute addresses in code — always `base + offset` resolved at init, logged for triage
 
 ## Exit Criteria
-- [ ] Same `payload.dll` (x64) loads in CS2 + TF2-x64 `-insecure` and prints `Adapter: CS2/Source1 OK`, entity count >0 on local bot server
-- [ ] `WorldToScreen` projects bot positions correctly, ESP boxes track through map change
-- [ ] Unload via IPC leaves game running, VAD clean, re-inject works without restart
+- [x] SDK core CRT-free (`peb.h` mirrors, `nt_api` GetModuleBase/GetProcByHash/ByName, pattern scan, RIP resolve, W2S math deferred): builds clean, busyloop regression green (factory null -> smoke only, no crash).
+- [x] CS2 adapter v1: exe detect, module fill, 3-globals pattern scan (guarded), live Schema walk (indices 13/2, guarded), entity-count walk (no schema needed), local HP/team/pos when schema resolves, `VacSafe-cs2.txt` proof. Source1/GoldSrc = clean stubs (05b).
+- [ ] Same `payload.dll` (x64) loads in CS2 + TF2-x64 `-insecure` and prints `Adapter: CS2/Source1 OK`, entity count >0 on local bot server — PENDING USER CS2 RUN (see Handoff below).
+- [ ] `WorldToScreen` projects bot positions correctly, ESP boxes track through map change — renderer iteration (05b).
+- [ ] Unload via IPC leaves game running, VAD clean, re-inject works without restart — IPC iteration (05b).
+
+## Handoff: CS2 -insecure validation (operator runs)
+1. Steam -> CS2 Properties -> Launch Options: `-insecure -novid`, launch, `map de_dust2` + `bot_add_ct` x3 (any map).
+2. `VacSafe.exe --game cs2 --payload <path>\payload-test.enc --method auto` (double-click works too).
+3. Expect `[ok]`, loader-side beep, `%TEMP%\VacSafe-cs2.txt` with `client=0x...`, 3 globals nonzero, `entities=N` (N>0 with bots), `schema=1` + `p0hp` if schema resolved.
+4. Failure guide: `sig stale: dwX` -> CS2 updated past our sigs (paste new sig/RVA or fill `offsets/cs2.json`); `schema ... missing` -> vtable/layout drift (entity count still valid); `Source1 adapter...` on TF2 -> expected (05b).
+5. Stay `-insecure` for all Phase 05 validation. No secure/MM until Phase 07 protocol on throwaways.
+
+## Build Notes (2026-09-21 lab, Binja-verified on schemasystem.dll)
+- CSchemaSystem vtable (len-40 table): [11]=GlobalTypeScope (returns `&g_GlobalScope`, no args), [12]=FindOrCreate (allocs 0x3640 scope on miss), [13]=FindTypeScopeForModule.
+- TRUE signatures differ from public headers: System[13](this, name, outOrNull)->scope (2-arg call writes through garbage r8); Scope[2](this, out**, name)->void (2-arg call misreads rax). Code passes 3 args both. 2-arg failures were silent before (guarded) — never crashes, but schema could never succeed.
+- `VACSAFE_NOCALL`/`VACSAFE_CRTNOCALL` diag gates remain for mechanics probes.

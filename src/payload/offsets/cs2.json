@@ -1,1 +1,20 @@
-{"game":"cs2","exe":"cs2.exe","arch":"x64","notes":"TODO Phase 05: fill after dump_schema_cs2.py","dwLocalPlayer":0,"dwEntityList":0,"dwViewMatrix":0}
+{
+  "_note": "Last-known-good CS2 globals. Preferred path is runtime PATTERN SCAN (adapter). Fill these ONLY when sigs go stale: payload prefers nonzero values here over scanning. Verify against your build with a dumper (a2x/cs2-dumper) after each CS2 update. NEVER hardcode into .cpp.",
+  "game": "cs2",
+  "exe": "cs2.exe",
+  "arch": "x64",
+  "buildDate": "unknown - fill after first -insecure validation",
+  "dwEntityList": 0,
+  "dwLocalPlayerPawn": 0,
+  "dwViewMatrix": 0,
+  "schema": {
+    "FindTypeScopeForModule_index": 13,
+    "FindDeclaredClass_index": 2,
+    "class_name_off": "0x8",
+    "class_fields_count_off": "0x24",
+    "class_fields_off": "0x30",
+    "field_name_off": "0x0",
+    "field_offset_off": "0x10",
+    "field_stride": "0x20"
+  }
+}

@@ -1,4 +1,5 @@
 #include "nt_api.h"
+#include "peb.h"
 #include <windows.h>
 #include <winternl.h>
 #include <cstddef>
@@ -13,17 +14,6 @@ uint32_t HashName(const char* s) {
   return h;
 }
 
-struct LdrEntry {
-  LIST_ENTRY InLoadOrderLinks;
-  LIST_ENTRY InMemoryOrderLinks;
-  LIST_ENTRY InInitOrderLinks;
-  void* DllBase;
-  void* EntryPoint;
-  ULONG SizeOfImage;
-  UNICODE_STRING FullDllName;
-  UNICODE_STRING BaseDllName;
-};
-
 static bool NameEqI(const wchar_t* a, const wchar_t* mod) {
   if (!a || !mod) return false;
   for (int i = 0; i < 72; ++i) {
@@ -36,39 +26,89 @@ static bool NameEqI(const wchar_t* a, const wchar_t* mod) {
   return false;
 }
 
-void* GetProcByHash(const wchar_t* module, uint32_t hash) {
+static int StrEq(const char* a, const char* b) {
+  while (*a && *a == *b) { ++a; ++b; }
+  return *a == *b;
+}
+
+void* GetModuleBase(const wchar_t* module) {
   __try {
-    PEB* peb = NtCurrentTeb()->ProcessEnvironmentBlock;
+    PEB* peb = peb::CurrentPeb();
     if (!peb || !peb->Ldr || !module) return nullptr;
-    HMODULE base = nullptr;
-    LIST_ENTRY* head = &peb->Ldr->InMemoryOrderModuleList;
+    auto* ldr = (peb::LdrData*)peb->Ldr;
+    LIST_ENTRY* head = &ldr->InMemoryOrderModuleList;
     for (LIST_ENTRY* cur = head->Flink; cur != head; cur = cur->Flink) {
-      auto* e = (LdrEntry*)((uint8_t*)cur - offsetof(LdrEntry, InMemoryOrderLinks));
-      if (NameEqI(e->BaseDllName.Buffer, module)) { base = (HMODULE)e->DllBase; break; }
-    }
-    if (!base) return nullptr;
-    auto* dos = (IMAGE_DOS_HEADER*)base;
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
-    auto* nt = (IMAGE_NT_HEADERS64*)((uint8_t*)base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
-    if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT) return nullptr;
-    auto& exp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (!exp.VirtualAddress) return nullptr;
-    auto* dir = (IMAGE_EXPORT_DIRECTORY*)((uint8_t*)base + exp.VirtualAddress);
-    auto* names = (DWORD*)((uint8_t*)base + dir->AddressOfNames);
-    auto* ords = (WORD*)((uint8_t*)base + dir->AddressOfNameOrdinals);
-    auto* funcs = (DWORD*)((uint8_t*)base + dir->AddressOfFunctions);
-    for (DWORD i = 0; i < dir->NumberOfNames; ++i) {
-      const char* nm = (const char*)((uint8_t*)base + names[i]);
-      if (HashName(nm) != hash) continue;
-      WORD ord = ords[i];
-      if ((DWORD)ord >= dir->NumberOfFunctions) return nullptr;
-      DWORD rva = funcs[ord];
-      if (rva >= exp.VirtualAddress && rva < exp.VirtualAddress + exp.Size) return nullptr; // forwarded
-      return (uint8_t*)base + rva;
+      auto* e = (peb::LdrEntry*)((uint8_t*)cur - offsetof(peb::LdrEntry, InMemoryOrderLinks));
+      if (NameEqI(e->BaseDllName.Buffer, module)) return e->DllBase;
     }
     return nullptr;
   } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+static void* ExportLookup(void* modBase, uint32_t hash, const char* name) {
+  auto* dos = (IMAGE_DOS_HEADER*)modBase;
+  if (!modBase || dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+  auto* nt = (IMAGE_NT_HEADERS64*)((uint8_t*)modBase + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+  if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT) return nullptr;
+  auto& exp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+  if (!exp.VirtualAddress) return nullptr;
+  auto* dir = (IMAGE_EXPORT_DIRECTORY*)((uint8_t*)modBase + exp.VirtualAddress);
+  auto* names = (DWORD*)((uint8_t*)modBase + dir->AddressOfNames);
+  auto* ords = (WORD*)((uint8_t*)modBase + dir->AddressOfNameOrdinals);
+  auto* funcs = (DWORD*)((uint8_t*)modBase + dir->AddressOfFunctions);
+  for (DWORD i = 0; i < dir->NumberOfNames; ++i) {
+    const char* nm = (const char*)((uint8_t*)modBase + names[i]);
+    bool hit = name ? StrEq(nm, name) : (HashName(nm) == hash);
+    if (!hit) continue;
+    WORD ord = ords[i];
+    if ((DWORD)ord >= dir->NumberOfFunctions) return nullptr;
+    DWORD rva = funcs[ord];
+    if (rva >= exp.VirtualAddress && rva < exp.VirtualAddress + exp.Size) return nullptr; // forwarded
+    return (uint8_t*)modBase + rva;
+  }
+  return nullptr;
+}
+
+void* GetProcByHash(const wchar_t* module, uint32_t hash) {
+  __try {
+    return ExportLookup(GetModuleBase(module), hash, nullptr);
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+void* GetProcByName(void* modBase, const char* name) {
+  __try {
+    if (!modBase || !name) return nullptr;
+    return ExportLookup(modBase, 0, name);
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
+}
+
+static size_t ModSize(void* base) {
+  auto* dos = (IMAGE_DOS_HEADER*)base;
+  if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+  auto* nt = (IMAGE_NT_HEADERS64*)((uint8_t*)base + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+  DWORD sz = (nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+      ? ((IMAGE_NT_HEADERS64*)nt)->OptionalHeader.SizeOfImage
+      : ((IMAGE_NT_HEADERS32*)nt)->OptionalHeader.SizeOfImage;
+  return (sz && sz < 0x40000000) ? sz : 0;
+}
+
+bool AddressInModules(uintptr_t addr) {
+  __try {
+    if (!addr) return false;
+    PEB* peb = peb::CurrentPeb();
+    if (!peb || !peb->Ldr) return false;
+    auto* ldr = (peb::LdrData*)peb->Ldr;
+    LIST_ENTRY* head = &ldr->InMemoryOrderModuleList;
+    for (LIST_ENTRY* cur = head->Flink; cur != head; cur = cur->Flink) {
+      auto* e = (peb::LdrEntry*)((uint8_t*)cur - offsetof(peb::LdrEntry, InMemoryOrderLinks));
+      uintptr_t b = (uintptr_t)e->DllBase;
+      size_t s = ModSize(e->DllBase);
+      if (b && s && addr >= b && addr < b + s) return true;
+    }
+    return false;
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 } // namespace vacsafe::nt

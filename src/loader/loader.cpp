@@ -6,6 +6,14 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "injector_core.h"
+#if __has_include("build_id.h")
+#include "build_id.h"
+#endif
+#ifdef VACSAFE_BUILD_ID
+#define VACSAFE_BIDSTR VACSAFE_BUILD_ID
+#else
+#define VACSAFE_BIDSTR "nobid-run-gen_build_id"
+#endif
 
 // VacSafe loader v1: Detect -> Inject -> Verify. Phase 06 full UX lands later;
 // this wires the real Inject() path so notepad/game smoke actually fires.
@@ -13,9 +21,18 @@
 static void Usage() {
   printf("VacSafe Injector (Phase 03 live wire)\n");
   printf("Usage: VacSafe.exe [--game cs2|tf2|css|l4d2|gmod|notepad] [--pid N] --payload payload.dll [--method auto|hijack|crt|apc] [--timeout Ms] [--verbose]\n");
+  printf("Double-click (no args): auto-detects game, injects payload.dll next to the exe, pauses.\n");
   printf("Examples:\n");
   printf("  VacSafe.exe --game notepad --payload build\\x64\\src\\payload\\payload.dll --verbose\n");
   printf("  VacSafe.exe --pid 1234 --payload payload.dll --method hijack\n");
+}
+
+// Double-click runs with argc==1 and the window would vanish on exit: pause instead.
+static void MaybePause(bool pause) {
+  if (!pause) return;
+  printf("\n[press Enter to close]");
+  fflush(stdout);
+  getchar();
 }
 
 static std::string ArgVal(int argc, char** argv, const char* key, const char* def = "") {
@@ -67,7 +84,9 @@ static DWORD DetectGame(const std::string& game, std::string& exeOut) {
 }
 
 int main(int argc, char** argv) {
-  if (HasFlag(argc, argv, "--help") || HasFlag(argc, argv, "-h")) { Usage(); return 0; }
+  const bool pauseAtEnd = (argc == 1); // double-clicked: keep window open
+  printf("[VacSafe build %s]\n", VACSAFE_BIDSTR);
+  if (HasFlag(argc, argv, "--help") || HasFlag(argc, argv, "-h")) { Usage(); MaybePause(pauseAtEnd); return 0; }
 
   std::string game = ArgVal(argc, argv, "--game");
   std::string pidS = ArgVal(argc, argv, "--pid");
@@ -83,6 +102,7 @@ int main(int argc, char** argv) {
     if (!pid) {
       printf("[fail] no target found (game='%s'). Launch notepad.exe or pass --pid.\n", game.c_str());
       Usage();
+      MaybePause(pauseAtEnd);
       return 1;
     }
   } else if (!game.empty()) {
@@ -100,6 +120,7 @@ int main(int argc, char** argv) {
     }
     if (payload.empty()) {
       printf("[fail] --payload required (tried payload.dll, ..\\payload\\payload.dll, build\\x64\\src\\payload\\payload.dll).\n");
+      MaybePause(pauseAtEnd);
       return 1;
     }
   }
@@ -156,6 +177,8 @@ int main(int argc, char** argv) {
   if (r.ok()) {
     printf("[ok] injected base=%p entryCalled=1 stealthMask=0x%X pid=%lu\n",
            r.injectedBase, r.stealthMask, (unsigned long)pid);
+    Beep(880, 200); // audible proof, loader-side (safe: own process/thread)
+    MaybePause(pauseAtEnd);
     return 0;
   }
   printf("[fail] ntstatus=0x%08lX base=%p entry=%d err=%s\n",
@@ -166,5 +189,6 @@ int main(int argc, char** argv) {
     printf("hint: E_EXEC_TIMEOUT — DllMain did not return; try --method apc or check payload entry.\n");
   else if (r.ntstatus == VACSAFE_E_OPEN)
     printf("hint: E_OPEN — same-IL, no admin needed; close handles holding the game open.\n");
+  MaybePause(pauseAtEnd);
   return 1;
 }
