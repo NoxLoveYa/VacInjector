@@ -1,0 +1,27 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "x64-release",
+      "generator": "Ninja",
+      "architecture": { "value": "x64", "strategy": "external" },
+      "binaryDir": "${sourceDir}/build/x64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VACSAFE_BUILD_TESTS": "ON",
+        "VACSAFE_BUILD_DRIVER": "OFF"
+      }
+    },
+    {
+      "name": "x86-release",
+      "generator": "Ninja",
+      "architecture": { "value": "x86", "strategy": "external" },
+      "binaryDir": "${sourceDir}/build/x86",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "VACSAFE_BUILD_TESTS": "OFF",
+        "VACSAFE_BUILD_DRIVER": "OFF"
+      }
+    }
+  ]
+}

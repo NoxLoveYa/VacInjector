@@ -1,0 +1,16 @@
+build/
+build/x64/
+build/x86/
+*.pdb
+*.exp
+*.lib
+*.sys
+*.enc
+*.log
+.vs/
+out/
+# lab-only, never commit
+plan/vac-dumps/
+plan/ban-log.md
+src/payload/offsets/local_*.json
+tools/__pycache__/
