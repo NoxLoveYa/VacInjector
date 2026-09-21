@@ -1,4 +1,6 @@
 #include "injector_core.h"
+#include "stealth.h"
+#include "crypto.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -66,6 +68,8 @@ InjectResult Inject(const InjectorConfig& cfg) {
   InjectResult r;
   if (!cfg.pid) { r.error = "no pid"; r.ntstatus = VACSAFE_E_OPEN; return r; }
 
+  vacsafe::stealth::ApplyPre(); // loader-side jitter (100-400ms)
+
   std::vector<uint8_t> img;
   if (!cfg.payloadPath.empty()) {
     HANDLE f = CreateFileW(cfg.payloadPath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -78,6 +82,22 @@ InjectResult Inject(const InjectorConfig& cfg) {
     CloseHandle(f);
     if (rd != img.size()) { r.error = "payload read short"; r.ntstatus = VACSAFE_E_OPEN; return r; }
   } else { r.error = "no payload (set payloadPath)"; r.ntstatus = VACSAFE_E_OPEN; return r; }
+
+  // At-rest encryption: .enc payloads decrypt with the compiled-in BUILD_ID keystream.
+  // Wrong build mixed in -> garbage -> ManualMap fails closed on "not MZ".
+  {
+    const std::wstring& p = cfg.payloadPath;
+    bool isEnc = p.size() >= 4 &&
+      (p.compare(p.size() - 4, 4, L".enc") == 0 || p.compare(p.size() - 4, 4, L".ENC") == 0);
+    if (isEnc) {
+      std::string derr;
+      if (!vacsafe::crypto::DecryptBuildId(img, derr)) {
+        r.error = std::string("payload decrypt: ") + derr;
+        r.ntstatus = VACSAFE_E_OPEN;
+        return r;
+      }
+    }
+  }
 
   std::string e;
   HANDLE hProc = OpenGameMinimal(cfg.pid, e);

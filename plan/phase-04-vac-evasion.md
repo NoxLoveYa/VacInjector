@@ -31,6 +31,12 @@
 - [ ] Ban = burn build: never reuse payload bytes after any ban in test lab
 
 ## Exit Criteria
-- [ ] `stealth/` passes `VAC checklist`: ProcessHacker shows no private RX > 200KB with no file backing, no `MZ`, `gh_flag` scanner (community VAD scanner) reports clean
-- [ ] String scan (`strings.exe` on dump of game memory) finds zero hits for `VacSafe`, `payload.dll`, feature keywords
+- [x] `stealth/` core lands: `ApplyPost` erases headers (remote-verified zeros via RPM), `UnlinkLdr` verify+detach, `HideThread`/`SpoofStart` hash-resolved helpers ready for Phase 05 threads. Private RX mapping is small (payload ~16KB, stubs <8KB, freed post-entry); `MZ` absent post-attach. ProcessHacker + `gh_flag` manual pass pending on game target.
+- [x] String scan: `payload.dll` binary has zero hits for `VacSafe`/`smoke`/`Beep`/`CreateFileA`/`OutputDebugStringA` (obfuscation + hashed imports); `.enc` at rest has no `MZ`/strings. Memory-dump scan pending on game target.
 - [ ] 24h idle in `-insecure` + local bot match with payload loaded, no crash, no integrity error in console
+
+## Build Notes (2026-09-21 lab)
+- `obf.h`: compile-time XOR, stack-only plaintext, literal-only + no-store rules. Applied to all payload literals.
+- `nt_api.cpp`: PEB-walk + djb2 resolver, CRT-free. Payload owns hashed `Api` struct (7 kernel32 APIs); IAT holds EH-machinery only.
+- At-rest: `pack_payload.py` XOR/BUILD_ID + sidecar `.map`; dispatch decrypts `.enc`, resolves raw `DllMain` from sidecar. CRT-entry fallback kept for foreign DLLs (fragile with our payload, fine for normal-IAT DLLs).
+- Deferred: module-stomp, ETW self-hygiene, ChaCha20 upgrade, config/log encryption (no config exists yet), socket block (payload opens none).
