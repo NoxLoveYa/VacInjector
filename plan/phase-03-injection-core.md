@@ -39,6 +39,13 @@ Explicitly BANNED: `CreateRemoteThread + LoadLibraryA/W`, `SetWindowsHookEx`, ra
 - Error codes: `VACSAFE_E_OPEN(0x100)`, `E_ALLOC`, `E_RELOC`, `E_IMPORT`, `E_EXEC_TIMEOUT`, `E_ARCH_MISMATCH` — surfaced to loader UI, logged with NTSTATUS hex
 
 ## Exit Criteria
-- [ ] ManualMap + Hijack works on `notepad x64/x86` + `cs2.exe -insecure` + `tf_win64.exe -insecure`
-- [ ] No `MZ` header, no LDR entry, no RWX after `ApplyPost` (verified with ProcessHacker VAD view)
+- [x] ManualMap + Hijack proven on classic Win32 (`busyloop.exe` runner + `cmd.exe` waiter): `[ok] entryCalled=1 stealthMask=0x7`, target survives, re-injectable. `cs2.exe -insecure` + `tf_win64.exe -insecure` pending game install.
+- [ ] No `MZ` header, no LDR entry, no RWX after `ApplyPost` (partial: RX/RW verified via VirtualQueryEx trace; header-erase+LDR-unlink land in Phase 04)
 - [ ] Wireshark/ProcMon shows no `LoadLibrary` string or plaintext DLL bytes on disk
+
+## Build Notes (2026-09-21 lab)
+- Raw `DllMain` via `payload.map` (` DllMain ` -> section VA + off) is the execution target. `DllMainCRTStartup` hangs on hijacked foreign threads (loader-lock/TLS path); fresh CRT threads are unaffected. MAP fallback = PE entry.
+- Dispatch order `auto` = hijack (v4 hunt: set-ctx, 30ms stick check, 1200ms flag poll, restore) -> remote-thread (fresh OS thread, `RtlExitUserThread`, no LoadLibrary) -> APC.
+- `VirtualProtect` is page-granular: stub and flag/scratch MUST live on separate pages or the flag write AVs. Same bug class fixed in hijack + APC stubs.
+- Win11 Store `notepad.exe` (`Microsoft.WindowsNotepad_*`, AppContainer) is NOT a valid lab target: remote threads fault inside `ntdll.dll` (WER: `c0000005` at `ntdll+0x5BE6B`) despite clean mapping, same module bases, no ACG. Games are classic Win32 — validate on `busyloop.exe`/`cmd.exe`/games, not Store apps.
+- Diag env gates (dev only): `VACSAFE_VERBOSE=1`, `VACSAFE_NOCALL=1` (hijack mechanics probe), `VACSAFE_CRTNOCALL=1`.

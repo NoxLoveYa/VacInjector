@@ -12,7 +12,7 @@ enum class Arch { X86, X64, Unknown };
 struct InjectorConfig {
   DWORD pid = 0;
   Arch arch = Arch::Unknown;
-  enum class Method { Auto, ManualMapHijack, ManualMapApc, KernelMap } method = Method::Auto;
+  enum class Method { Auto, ManualMapHijack, ManualMapRemoteThread, ManualMapApc, KernelMap } method = Method::Auto;
   std::wstring payloadPath;
   bool eraseHeaders = true;
   bool unlinkLdr = true;

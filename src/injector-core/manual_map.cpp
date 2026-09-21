@@ -202,7 +202,10 @@ void* ManualMap(HANDLE hProc, const uint8_t* image, size_t size, std::string& er
     }
   }
 
-  // 6. Final protects per section (RX for code, never RWX).
+  // 6. Final protects per section (RX for code, never RWX). Checked: under ACG
+  // (Arbitrary Code Guard) executable promotion FAILS and must abort loudly,
+  // otherwise the later call faults with a misleading AV at entry.
+  bool verbose = (getenv("VACSAFE_VERBOSE") != nullptr);
   for (int i = 0; i < numSects; ++i) {
     auto& s = sects[i];
     DWORD vsz = s.Misc.VirtualSize ? s.Misc.VirtualSize : s.SizeOfRawData;
@@ -211,7 +214,19 @@ void* ManualMap(HANDLE hProc, const uint8_t* image, size_t size, std::string& er
     if (prot == PAGE_EXECUTE_READWRITE) prot = PAGE_EXECUTE_READ; // harden: no RWX ever
     DWORD old = 0;
     void* dst = (uint8_t*)remote + s.VirtualAddress;
-    VirtualProtectEx(hProc, dst, vsz, prot, &old);
+    if (!VirtualProtectEx(hProc, dst, vsz, prot, &old)) {
+      char b[160]; snprintf(b, sizeof(b), "section %d protect RX/RO failed (GLE=0x%08lX: ACG/sandbox blocking executable mapping?)", i, GetLastError());
+      return cleanup(b);
+    }
+    if (verbose) {
+      MEMORY_BASIC_INFORMATION mbi{};
+      VirtualQueryEx(hProc, dst, &mbi, sizeof(mbi));
+      printf("[map] sect[%d] %c%c%c req=0x%lX actual=0x%lX\n", i,
+             (s.Characteristics & IMAGE_SCN_MEM_EXECUTE) ? 'X' : '-',
+             (s.Characteristics & IMAGE_SCN_MEM_READ) ? 'R' : '-',
+             (s.Characteristics & IMAGE_SCN_MEM_WRITE) ? 'W' : '-',
+             (unsigned long)prot, (unsigned long)mbi.Protect);
+    }
   }
   // Headers -> RO.
   { DWORD old = 0; VirtualProtectEx(hProc, remote, headerSize, PAGE_READONLY, &old); }

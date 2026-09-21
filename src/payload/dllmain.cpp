@@ -6,6 +6,7 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(hMod);
     vacsafe::stealth::ApplyPost(hMod);
+    OutputDebugStringA("[VacSafe] payload attached (Phase 03 smoke).");
     // TODO: CreateThread(hidden) -> Sdk::Init
   }
   return TRUE;

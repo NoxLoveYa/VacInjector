@@ -1,6 +1,8 @@
 #include "injector_core.h"
 #include <windows.h>
 #include <cstdio>
+#include <cstring>
+#include <string>
 #include <vector>
 
 namespace vacsafe {
@@ -24,6 +26,40 @@ static void* RemoteEntry(const uint8_t* localImg, void* base) {
     : nt32->OptionalHeader.AddressOfEntryPoint;
   if (!ep) return nullptr;
   return (uint8_t*)base + ep;
+}
+
+// Raw user DllMain (skips DllMainCRTStartup: its loader-lock/TLS path hangs on
+// hijacked foreign threads; fresh CRT threads are unaffected). Resolved from the
+// linker .map next to the payload: " 0001:0000133c  _DllMain@12" -> section[0].VA + off.
+static void* RemoteRawDllMain(const uint8_t* localImg, size_t imgSize, const std::wstring& payloadPath, void* base) {
+  if (payloadPath.size() < 5) return nullptr;
+  std::wstring mapPath = payloadPath.substr(0, payloadPath.size() - 4) + L".map";
+  FILE* f = nullptr;
+  if (_wfopen_s(&f, mapPath.c_str(), L"r") != 0 || !f) return nullptr;
+  unsigned seg = 0, off = 0;
+  char line[512];
+  bool found = false;
+  while (fgets(line, sizeof(line), f)) {
+    if (!strstr(line, "DllMain@12") && !strstr(line, " DllMain ")) continue;
+    if (sscanf_s(line, " %x:%x", &seg, &off) == 2) { found = true; break; }
+  }
+  fclose(f);
+  if (!found || !seg) return nullptr;
+  auto* dos = (IMAGE_DOS_HEADER*)localImg;
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+  auto* nt32 = (IMAGE_NT_HEADERS32*)(localImg + dos->e_lfanew);
+  if (nt32->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+  WORD nSects = nt32->FileHeader.NumberOfSections;
+  if (seg < 1 || seg > nSects) return nullptr;
+  IMAGE_SECTION_HEADER* sects = nullptr;
+  if (nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+    sects = IMAGE_FIRST_SECTION((IMAGE_NT_HEADERS64*)nt32);
+  else
+    sects = IMAGE_FIRST_SECTION(nt32);
+  (void)imgSize;
+  DWORD rva = sects[seg - 1].VirtualAddress + off;
+  if (!rva) return nullptr;
+  return (uint8_t*)base + rva;
 }
 
 InjectResult Inject(const InjectorConfig& cfg) {
@@ -71,8 +107,11 @@ InjectResult Inject(const InjectorConfig& cfg) {
   if (!base) { r.error = "ManualMap: " + e; r.ntstatus = VACSAFE_E_ALLOC; CloseHandle(hProc); return r; }
   r.injectedBase = base;
 
-  void* entry = RemoteEntry(img.data(), base);
+  void* entry = RemoteRawDllMain(img.data(), img.size(), cfg.payloadPath, base);
+  bool rawEntry = (entry != nullptr);
+  if (!entry) entry = RemoteEntry(img.data(), base);
   if (!entry) { r.error = "no entry point (DLL needs DllMain)"; r.ntstatus = VACSAFE_E_IMPORT; VirtualFreeEx(hProc, base, 0, MEM_RELEASE); CloseHandle(hProc); return r; }
+  if (getenv("VACSAFE_VERBOSE")) printf("[inject] entry=%p (%s)\n", entry, rawEntry ? "raw DllMain" : "CRT entry fallback");
 
   bool called = false;
   auto method = cfg.method;
@@ -80,11 +119,17 @@ InjectResult Inject(const InjectorConfig& cfg) {
     if (ExecViaHijack(hProc, entry, base, cfg.timeoutMs, e)) called = true;
     else if (method != InjectorConfig::Method::Auto) { r.error = "Hijack: " + e; r.ntstatus = VACSAFE_E_EXEC_TIMEOUT; }
   }
-  if (!called && (method == InjectorConfig::Method::Auto || method == InjectorConfig::Method::ManualMapApc)) {
+  if (!called && (method == InjectorConfig::Method::Auto || method == InjectorConfig::Method::ManualMapRemoteThread)) {
     std::string e2;
-    if (ExecViaApc(hProc, entry, base, cfg.timeoutMs, e2)) called = true;
-    else if (method != InjectorConfig::Method::Auto) { r.error = "APC: " + e2; r.ntstatus = VACSAFE_E_EXEC_TIMEOUT; }
-    else r.error = "Hijack: " + e + " | APC: " + e2;
+    if (ExecViaRemoteThread(hProc, entry, base, cfg.timeoutMs, e2)) called = true;
+    else if (method != InjectorConfig::Method::Auto) { r.error = "RemoteThread: " + e2; r.ntstatus = VACSAFE_E_EXEC_TIMEOUT; }
+    else r.error = "Hijack: " + e + " | RemoteThread: " + e2;
+  }
+  if (!called && (method == InjectorConfig::Method::Auto || method == InjectorConfig::Method::ManualMapApc)) {
+    std::string e3;
+    if (ExecViaApc(hProc, entry, base, cfg.timeoutMs, e3)) called = true;
+    else if (method != InjectorConfig::Method::Auto) { r.error = "APC: " + e3; r.ntstatus = VACSAFE_E_EXEC_TIMEOUT; }
+    else r.error += " | APC: " + e3;
   }
   if (!called) {
     if (!r.ntstatus) r.ntstatus = VACSAFE_E_EXEC_TIMEOUT;
