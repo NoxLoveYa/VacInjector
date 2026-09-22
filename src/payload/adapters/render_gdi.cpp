@@ -30,6 +30,7 @@ typedef int (WINAPI* MoveToFn)(void*, int, int, void*);
 typedef int (WINAPI* LineToFn)(void*, int, int);
 typedef int (WINAPI* IsVisFn)(void*);
 typedef int (WINAPI* GetMetricsFn)(int);
+typedef int (WINAPI* GetRectFn)(void*, void*);
 
 struct Gdi {
   EnumWindowsFn enumWin = nullptr;
@@ -48,11 +49,12 @@ struct Gdi {
   LineToFn lineTo = nullptr;
   IsVisFn isVis = nullptr;
   GetMetricsFn getMetrics = nullptr;
+  GetRectFn getRect = nullptr;
   // djb2: EnumWindows=0x94CFDCC5 GetWindowThreadProcessId=0xA58EDBE1 GetDC=0x0D3D24AC
   // ReleaseDC=0xE43871CD Rectangle=0x5267005A CreatePen=0xED6925BC SelectObject=0x7CF4FD7C
   // DeleteObject=0xCC68186F GetStockObject=0xD7460980 SetBkMode=0x6F828843
   // SetTextColor=0x41936715 TextOutA=0x805294C3 MoveToEx=0x0694FFDC LineTo=0xC0D12C10
-  // IsWindowVisible=0xE35AC807 (all user32.dll)
+  // IsWindowVisible=0xE35AC807 GetSystemMetrics=0xA988C1A1 GetWindowRect=0xF68C840B (all user32.dll)
   bool Resolve() {
     wchar_t u32[16];
     vacsafe::str::CopyToW(vacsafe::str::SID_mod_user32, u32, 16);
@@ -72,9 +74,10 @@ struct Gdi {
     lineTo = (LineToFn)nt::GetProcByHash(u32, 0xC0D12C10);
     isVis = (IsVisFn)nt::GetProcByHash(u32, 0xE35AC807);
     getMetrics = (GetMetricsFn)nt::GetProcByHash(u32, 0xA988C1A1);
+    getRect = (GetRectFn)nt::GetProcByHash(u32, 0xF68C840B);
     return enumWin && wndThread && getDc && releaseDc && rect && createPen &&
            selObj && delObj && getStock && bkMode && textColor && textOut &&
-           moveTo && lineTo && isVis && getMetrics;
+           moveTo && lineTo && isVis && getMetrics && getRect;
   }
 };
 
@@ -83,6 +86,7 @@ static void* s_hwnd = nullptr;
 static const sdk::IGameAdapter* s_ad = nullptr;
 static sdk::GameContext* s_ctx = nullptr;
 static const Api* s_api = nullptr;
+static uintptr_t s_base = 0;
 static int s_frames = 0;
 static int s_drawnTotal = 0;
 
@@ -90,8 +94,16 @@ static int __stdcall EnumCb(void* hwnd, uintptr_t pid) {
   __try {
     uint32_t p = 0;
     if (g_gdi.wndThread && g_gdi.wndThread(hwnd, &p) && p == (uint32_t)pid && !s_hwnd) {
-      // Visible top-level only: first match is often a hidden helper window.
+      // Visible AND nonzero-area top-level only (helpers are hidden or 0-size).
       if (g_gdi.isVis && !g_gdi.isVis(hwnd)) return 1;
+      if (g_gdi.getRect) {
+        struct R { int l, t, r, b; } rc{};
+        if (g_gdi.getRect(hwnd, &rc) && (rc.r - rc.l) > 200 && (rc.b - rc.t) > 200) {
+          s_hwnd = hwnd;
+          return 0;
+        }
+        return 1;
+      }
       s_hwnd = hwnd;
       return 0; // stop
     }
@@ -133,10 +145,23 @@ static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn)
     char* dst = tmp + tn;
     for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
     *dst = 0;
-    char out[96]{};
+    char out[128]{};
     size_t p = 0;
-    // "hwnd=0x.. frames=N drawn=M"
-    const char* h = "hwnd=";
+    // "base=0x.. hwnd=0x.. frames=N drawn=M": identifies which image writes.
+    const char* bb = "base=";
+    while (*bb && p + 1 < sizeof(out)) out[p++] = *bb++;
+    {
+      char hx0[20];
+      uint64_t v0 = (uint64_t)s_base;
+      const char* dig0 = "0123456789ABCDEF";
+      out[p++] = '0'; out[p++] = 'x';
+      bool st0 = false;
+      for (int sh = 60; sh >= 0; sh -= 4) {
+        int d = (int)((v0 >> sh) & 0xF);
+        if (d || st0 || sh == 0) { st0 = true; if (p + 1 < sizeof(out)) out[p++] = dig0[d]; }
+      }
+    }
+    const char* h = " hwnd=";
     while (*h && p + 1 < sizeof(out)) out[p++] = *h++;
     char hx[20];
     uint64_t v = (uint64_t)(uintptr_t)hwnd;
@@ -263,11 +288,12 @@ static DWORD WINAPI RenderThread(LPVOID p) {
   return 0;
 }
 
-void RenderStart(const sdk::IGameAdapter* ad, sdk::GameContext* ctx, const Api* api) {
+void RenderStart(const sdk::IGameAdapter* ad, sdk::GameContext* ctx, const Api* api, void* base) {
   if (!ad || !ctx || !api || !api->createThread) return;
   s_ad = ad;
   s_ctx = ctx;
   s_api = api;
+  s_base = (uintptr_t)base;
   DWORD tid = 0;
   HANDLE h = api->createThread(nullptr, 0, RenderThread, nullptr, 0, &tid);
   // R-3 marker (even on failure): proves whether the thread was ever created.
