@@ -24,6 +24,9 @@ fld_health = m_iHealth
 fld_team = m_iTeamNum
 fld_scene = m_pGameSceneNode
 fld_origin = m_vecOrigin
+fld_pawn = m_hPawn
+cls_controller = CCSPlayerController
+des_controller = cs_player_controller
 d_stage = stage=
 d_exe =  exe=
 d_err =  err=

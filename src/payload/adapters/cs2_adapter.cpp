@@ -239,7 +239,7 @@ static int FindField(void* cls, const char* field) {
 }
 
 struct SchemaOut {
-  int offHealth = -1, offTeam = -1, offScene = -1, offOrigin = -1;
+  int offHealth = -1, offTeam = -1, offScene = -1, offOrigin = -1, offPawn = -1;
   bool ok = false;
 };
 
@@ -275,6 +275,12 @@ static bool ResolveSchema(sdk::GameContext* ctx, SchemaOut* so) {
   void* node = CallClass(ctx, scope, nm_node);
   STRBUF(nm_org, SID_fld_origin);
   if (node) so->offOrigin = FindField(node, nm_org);
+  STRBUF(nm_ctl, SID_cls_controller);
+  void* ctl = CallClass(ctx, scope, nm_ctl);
+  if (ctl) {
+    STRBUF(nm_hp2, SID_fld_pawn);
+    so->offPawn = FindField(ctl, nm_hp2);
+  }
   so->ok = (so->offHealth >= 0 && so->offTeam >= 0);
   Stage(ctx, 90);
   return true;
@@ -453,6 +459,7 @@ static bool Cs2Init(sdk::GameContext* ctx) {
     ctx->priv[2] = (uintptr_t)(intptr_t)so.offScene;
     ctx->priv[3] = (uintptr_t)(intptr_t)so.offOrigin;
     ctx->priv[4] = so.ok ? 1 : 0;
+    ctx->priv[14] = (uintptr_t)(intptr_t)so.offPawn;
   } else {
     ctx->priv[4] = 0; // schema failed: err already set; globals still valid
     Stage(ctx, 95);
@@ -491,6 +498,29 @@ static bool Cs2Init(sdk::GameContext* ctx) {
   return true;
 }
 
+static uintptr_t WalkIndex(sdk::GameContext* ctx, int idx) {
+  // Entry stride 0x70 VERIFIED live on build 14181: 13/63 client-VT vs 0x78 (1/63),
+  // 0x68 (1), 0x80 (3). Chunk stride 0x8. Zero-fault (gated reads only).
+  if (!ctx || idx < 0 || idx >= 8192) return 0;
+  uintptr_t chunk = sdk::Read<uintptr_t>(ctx->entityList + 0x10 + 0x8 * (uintptr_t)(idx >> 9));
+  if (!chunk) return 0;
+  return sdk::Read<uintptr_t>(chunk + 0x70 * (uintptr_t)(idx & 0x1FF));
+}
+
+static bool IsController(uintptr_t ent) {
+  // Build 14181 VERIFIED (external walk, 170 named entities): designer char* at
+  // identity+0x20 (identity = [ent+0x10]). Old +0x8/+0x8 chain reads garbage here.
+  uintptr_t id = sdk::Read<uintptr_t>(ent + 0x10);
+  if (!id) return false;
+  uintptr_t nm = sdk::Read<uintptr_t>(id + 0x20);
+  if (!nm) return false;
+  char buf[40]{};
+  if (!sdk::ReadBuf(nm, buf, sizeof(buf) - 1)) return false;
+  char want[40];
+  vacsafe::str::CopyTo(vacsafe::str::SID_des_controller, want, sizeof(want));
+  return NameIs(buf, want);
+}
+
 static int Cs2Players(sdk::GameContext* ctx, sdk::Player* out, int max) {
   __try {
     if (!ctx || !out || max <= 0) return 0;
@@ -498,28 +528,31 @@ static int Cs2Players(sdk::GameContext* ctx, sdk::Player* out, int max) {
     int offTeam = (int)(intptr_t)ctx->priv[1];
     int offScene = (int)(intptr_t)ctx->priv[2];
     int offOrg = (int)(intptr_t)ctx->priv[3];
-    bool haveFields = (ctx->priv[4] != 0);
+    int offPawn = (int)(intptr_t)ctx->priv[14];
+    bool haveFields = (ctx->priv[4] != 0) && offHp > 0 && offTeam > 0 && offPawn > 0;
+    if (!haveFields) return 0; // schema-gated: controllers need field offsets
     int n = 0;
-    for (int i = 1; i < 512 && n < max; ++i) {
-      uintptr_t chunk = sdk::Read<uintptr_t>(ctx->entityList + ((0x8 * (i & 0x7FFF)) >> 9) + 0x10);
-      if (!chunk) continue;
-      uintptr_t ent = sdk::Read<uintptr_t>(chunk + 0x70 * (uintptr_t)(i & 0x1FF));
-      if (!ent) continue;
+    for (int i = 1; i <= 64 && n < max; ++i) {
+      uintptr_t ctl = WalkIndex(ctx, i);
+      if (!ctl || !IsController(ctl)) continue;
+      uint32_t hpawn = sdk::Read<uint32_t>(ctl + (uintptr_t)offPawn);
+      if (!hpawn || hpawn == 0xFFFFFFFF) continue;
+      uintptr_t pawn = WalkIndex(ctx, (int)(hpawn & 0x7FFF));
+      if (!pawn) continue;
+      int hp = sdk::Read<int>(pawn + (uintptr_t)offHp);
+      if (hp <= 0 || hp > 1000) continue; // live pawns only
       sdk::Player* p = &out[n];
-      p->health = 0; p->team = 0; p->dormant = true;
+      p->health = hp;
+      p->team = sdk::Read<int>(pawn + (uintptr_t)offTeam);
+      p->dormant = false;
       p->pos.x = p->pos.y = p->pos.z = 0.0f;
       p->name[0] = 0;
-      if (haveFields) {
-        p->health = sdk::Read<int>(ent + (uintptr_t)offHp);
-        p->team = sdk::Read<int>(ent + (uintptr_t)offTeam);
-        p->dormant = (p->health <= 0 || p->health > 1000);
-        if (offScene >= 0 && offOrg >= 0) {
-          uintptr_t node = sdk::Read<uintptr_t>(ent + (uintptr_t)offScene);
-          if (node) {
-            p->pos.x = sdk::Read<float>(node + (uintptr_t)offOrg);
-            p->pos.y = sdk::Read<float>(node + (uintptr_t)offOrg + 4);
-            p->pos.z = sdk::Read<float>(node + (uintptr_t)offOrg + 8);
-          }
+      if (offScene >= 0 && offOrg >= 0) {
+        uintptr_t node = sdk::Read<uintptr_t>(pawn + (uintptr_t)offScene);
+        if (node) {
+          p->pos.x = sdk::Read<float>(node + (uintptr_t)offOrg);
+          p->pos.y = sdk::Read<float>(node + (uintptr_t)offOrg + 4);
+          p->pos.z = sdk::Read<float>(node + (uintptr_t)offOrg + 8);
         }
       }
       ++n;
