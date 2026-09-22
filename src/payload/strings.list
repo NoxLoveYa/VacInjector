@@ -38,6 +38,9 @@ d_base =  base=
 d_size =  size=
 d_mz =  mz=
 d_pm =  pm=
+d_ini =  ini=
+d_dg =  dg=
+d_c0 =  c0=
 w_ent = dwEntityList
 w_lp = dwLocalPlayerPawn
 w_vm = dwViewMatrix

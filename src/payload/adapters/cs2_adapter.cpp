@@ -138,7 +138,7 @@ static bool ScanGlobal(sdk::GameContext* ctx, const uint8_t* pat, const char* ma
     AppHex(eb, sizeof(eb), &i, ctx->priv[9], true);
     AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_ninst);
     AppHex(eb, sizeof(eb), &i, ctx->priv[6], true);
-    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_pm);
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_ini);
     AppHex(eb, sizeof(eb), &i, ctx->priv[11], true);
     eb[i] = 0;
     sdk::SetErr(ctx, eb);
@@ -306,26 +306,31 @@ static uint32_t ParseHex(const char* s, size_t n) {
 }
 
 static void LoadOffsetsIni(sdk::GameContext* ctx) {
+  // reason codes in priv[11] low byte (overwrites pm verdict which served its
+  // purpose): 0=unreached 1=no-api 2=no-path 3=open-fail 4=size-bad 5=read-fail
+  // 6=parsed-zero 7=applied. Proof prints ini=code.
   __try {
+    ctx->priv[11] = 0;
     const vacsafe::Api* api = CtxApi(ctx);
-    if (!api || !api->createFile || !api->readFile || !api->getFileSize) return;
+    if (!api || !api->createFile || !api->readFile || !api->getFileSize) { ctx->priv[11] = 1; return; }
     char rel[32];
     vacsafe::str::CopyTo(vacsafe::str::SID_offsets_rel, rel, sizeof(rel));
     char tmp[MAX_PATH] = {0};
     DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
-    if (!tn || tn >= sizeof(tmp) - 32) return;
+    if (!tn || tn >= sizeof(tmp) - 32) { ctx->priv[11] = 2; return; }
     char* dst = tmp + tn;
     for (size_t i = 0; rel[i]; ++i) *dst++ = rel[i];
     *dst = 0;
     HANDLE f = api->createFile(tmp, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return;
+    if (f == INVALID_HANDLE_VALUE) { ctx->priv[11] = 3; return; }
     DWORD hi = 0;
     DWORD sz = api->getFileSize(f, &hi);
-    if (!sz || hi || sz > 512) { api->close(f); return; }
+    if (!sz || hi || sz > 512) { api->close(f); ctx->priv[11] = 4; return; }
     char buf[512]{};
     DWORD rd = 0;
-    if (!api->readFile(f, buf, sz, &rd, nullptr) || rd != sz) { api->close(f); return; }
+    if (!api->readFile(f, buf, sz, &rd, nullptr) || rd != sz) { api->close(f); ctx->priv[11] = 5; return; }
     api->close(f);
+    int applied = 0;
     size_t i = 0;
     while (i < rd) {
       size_t ls = i;
@@ -335,14 +340,15 @@ static void LoadOffsetsIni(sdk::GameContext* ctx) {
       if (eq < ls && ctx->mod.clientBase) {
         uint32_t v = ParseHex(buf + eq + 1, ls - eq - 1);
         if (v) {
-          if (buf[i] == 'e') ctx->entityList = ctx->mod.clientBase + v;
-          else if (buf[i] == 'l') ctx->localPlayer = ctx->mod.clientBase + v;
-          else if (buf[i] == 'v') ctx->viewMatrix = ctx->mod.clientBase + v;
+          if (buf[i] == 'e') { ctx->entityList = ctx->mod.clientBase + v; ++applied; }
+          else if (buf[i] == 'l') { ctx->localPlayer = ctx->mod.clientBase + v; ++applied; }
+          else if (buf[i] == 'v') { ctx->viewMatrix = ctx->mod.clientBase + v; ++applied; }
         }
       }
       i = ls + 1;
       while (i < rd && (buf[i] == '\n' || buf[i] == '\r')) ++i;
     }
+    ctx->priv[11] = applied ? 7 : 6;
   } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
@@ -409,23 +415,6 @@ static void MapSanity(sdk::GameContext* ctx) {
     }
     AppId(eb, sizeof(eb), &p, vacsafe::str::SID_d_ninst);
     eb[p++] = (char)('0' + (count > 9 ? 9 : count));
-    // DIAG (temporary): compare 16B at file-verified RVA 0x9AA44A against the
-    // expected file bytes. Verdict in priv[11]: 0xFF match, 0xFE fault, else
-    // first mismatch index. Settles wrong-base vs runtime-patch vs scanner-bug.
-    {
-      static const uint8_t kExp[16] = {
-        0x48,0x8B,0x0D,0xEF,0x57,0x89,0x01,0x48,
-        0x89,0x7C,0x24,0x30,0x8B,0xFA,0xC1,0xEB };
-      uint8_t probe[16] = {0};
-      uintptr_t verdict = 0xFE;
-      if (sdk::ReadBuf(ctx->mod.clientBase + 0x9AA44A, probe, 16)) {
-        verdict = 0xFF;
-        for (int i = 0; i < 16; ++i) {
-          if (probe[i] != kExp[i]) { verdict = (uintptr_t)i; break; }
-        }
-      }
-      ctx->priv[11] = verdict;
-    }
     eb[p] = 0;
     sdk::SetErr(ctx, eb);
   } __except (EXCEPTION_EXECUTE_HANDLER) {}
@@ -436,9 +425,17 @@ static bool Cs2Init(sdk::GameContext* ctx) {
   if (!sdk::FillModules(ctx)) { Stage(ctx, 19); return false; }
   MapSanity(ctx); // sets err with map/mz/text/instances; ScanGlobal overwrites on miss
   StageDetail(ctx, 20, ctx->mod.clientBase, ctx->mod.clientSize);
-  LoadOffsetsIni(ctx); // ini RVAs win; missing entries fall through to scans
+  LoadOffsetsIni(ctx); // ini RVAs win (priv[11] = reason code); missing entries fall to scans
   if (!ctx->entityList) {
     if (!ScanGlobal(ctx, kEntPat, kEntMask, sizeof(kEntPat), vacsafe::str::SID_w_ent, &ctx->entityList)) { Stage(ctx, 29); return false; }
+  }
+  // dwEntityList is the ADDRESS of the list pointer: deref once. The walk then
+  // uses LB directly (chunk = [LB + 0x10*(i>>9) + 0x10]). Walking from the
+  // address itself reads client bytes as pointers (2026-09-22 lesson).
+  {
+    uintptr_t lb = sdk::Read<uintptr_t>(ctx->entityList);
+    if (!lb) { sdk::SetErr(ctx, "entityList deref null"); Stage(ctx, 31); return false; }
+    ctx->entityList = lb;
   }
   Stage(ctx, 30);
   if (!ctx->localPlayer) {
@@ -472,6 +469,23 @@ static bool Cs2Init(sdk::GameContext* ctx) {
       if (sw > 320 && sw < 16384 && sh > 200 && sh < 16384) { w = sw; h = sh; }
     }
     sScrW = w; sScrH = h;
+  }
+  // DIAG: CanRead verdicts on the entity chain. Bits: 0=VQok,
+  // 1=canList, 2=canChunk0. Persisted in priv[12..13] for the proof line.
+  {
+    uint64_t diag = 0;
+    uintptr_t chunk0 = 0;
+    __try {
+      void* vq = sdk::SdkResolveVQ();
+      if (vq) diag |= 1;
+      if (ctx->entityList && sdk::CanRead(ctx->entityList, 8)) {
+        diag |= 2;
+        chunk0 = sdk::Read<uintptr_t>(ctx->entityList + 0x10);
+        if (chunk0 && sdk::CanRead(chunk0, 8)) diag |= 4;
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    ctx->priv[12] = (uintptr_t)diag;
+    ctx->priv[13] = chunk0;
   }
   Stage(ctx, 100);
   return true;

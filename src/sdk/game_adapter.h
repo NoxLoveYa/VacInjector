@@ -42,8 +42,8 @@ struct GameContext {
   uintptr_t viewMatrix = 0;
   // Adapter scratch (offsets, flags). CS2: [0]=offHealth [1]=offTeam
   // [2]=offSceneNode [3]=offOrigin [4]=schemaOk [5]=lastStage [6]=mapInstCount
-  // [7]=hostApi [8]=mzWord [9]=textLo32 [10]=textHi32.
-  uintptr_t priv[12]{};
+  // [7]=hostApi [8]=mzWord [9]=textLo32 [10]=textHi32 [12]=readDiag [13]=chunk0.
+  uintptr_t priv[14]{};
   char err[kMaxErrLen]{};
 };
 

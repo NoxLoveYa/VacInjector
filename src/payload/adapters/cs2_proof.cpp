@@ -92,6 +92,12 @@ bool Cs2Proof(sdk::GameContext* ctx, const Api* api) {
   mark(302);
   AppendId(out, sizeof(out), &p, vacsafe::str::SID_p_ents);
   AppendU32(out, sizeof(out), &p, (uint32_t)(n < 0 ? 0 : n));
+  AppendId(out, sizeof(out), &p, vacsafe::str::SID_d_dg);
+  AppendU64(out, sizeof(out), &p, ctx->priv[12]);
+  AppendId(out, sizeof(out), &p, vacsafe::str::SID_d_c0);
+  AppendU64(out, sizeof(out), &p, ctx->priv[13]);
+  AppendId(out, sizeof(out), &p, vacsafe::str::SID_d_ini);
+  AppendU64(out, sizeof(out), &p, ctx->priv[11]);
   if (n > 0) {
     AppendId(out, sizeof(out), &p, vacsafe::str::SID_p_hp);
     AppendU32(out, sizeof(out), &p, (uint32_t)(players[0].health < 0 ? 0 : players[0].health));
