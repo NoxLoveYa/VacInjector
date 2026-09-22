@@ -532,8 +532,54 @@ static bool Cs2W2S(sdk::GameContext* ctx, const sdk::Vec3& w, sdk::Vec3& s) {
 extern const sdk::IGameAdapter kCs2Adapter = { Cs2Name, Cs2Init, Cs2Players, Cs2W2S };
 
 // ESP snapshot loop (Phase 05b-i, no hooks): every 500ms project all players,
-// rewrite VacSafe-esp.txt with the latest snapshot (120 ticks = 60s, then exit).
-// Validates the full read->W2S->screen path; pixels come with the Present hook.
+// rewrite VacSafe-esp.txt (render log: boxes) + VacSafe-debug.txt (heartbeat).
+// 120 ticks = 60s, then thread exits. Validates read->W2S->screen path.
+static void WriteTickFiles(const Api* api, const char* esp, size_t espLen, const char* dbg, size_t dbgLen) {
+  __try {
+    char rel[32];
+    vacsafe::str::CopyTo(vacsafe::str::SID_esp_rel, rel, sizeof(rel));
+    char tmp[MAX_PATH] = {0};
+    DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
+    if (tn && tn < sizeof(tmp) - 32) {
+      char* dst = tmp + tn;
+      for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
+      *dst = 0;
+      HANDLE f = api->createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (f != INVALID_HANDLE_VALUE) {
+        DWORD w = 0;
+        api->writeFile(f, esp, (DWORD)espLen, &w, nullptr);
+        api->close(f);
+      }
+    }
+    // debug heartbeat reuses a sibling filename
+    {
+      char tmp2[MAX_PATH] = {0};
+      DWORD tn2 = api->getTempPath(sizeof(tmp2) - 40, tmp2);
+      if (tn2 && tn2 < sizeof(tmp2) - 40) {
+        char rel2[32];
+        vacsafe::str::CopyTo(vacsafe::str::SID_dbg_rel, rel2, sizeof(rel2));
+        char* d2 = tmp2 + tn2;
+        for (size_t k = 0; rel2[k]; ++k) *d2++ = rel2[k];
+        *d2 = 0;
+        HANDLE f = api->createFile(tmp2, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+          DWORD w = 0;
+          api->writeFile(f, dbg, (DWORD)dbgLen, &w, nullptr);
+          api->close(f);
+        }
+      }
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+static void AppInt(char* dst, size_t cap, size_t* pos, int v) {
+  char nb[12]; int nn = 0;
+  if (v < 0) { if (*pos + 1 < cap) dst[(*pos)++] = '-'; v = -v; }
+  if (!v) nb[nn++] = '0';
+  while (v > 0 && nn < 11) { nb[nn++] = (char)('0' + v % 10); v /= 10; }
+  while (nn > 0 && *pos + 1 < cap) dst[(*pos)++] = nb[--nn];
+}
+
 void EspLog(sdk::GameContext* ctx, const Api* api) {
   if (!ctx || !api || !api->sleepMs) return;
   for (int tick = 0; tick < 120; ++tick) {
@@ -541,52 +587,52 @@ void EspLog(sdk::GameContext* ctx, const Api* api) {
     __try {
       sdk::Player ps[16]{};
       int n = kCs2Adapter.GetPlayers(ctx, ps, 16);
+      if (n < 0) n = 0;
+      if (n > 16) n = 16;
       char out[2048]{};
       size_t p = 0;
-      // "tick=N n=M\r\n" then "i x y hp team\r\n" per player (ints only, no CRT).
-      const char* tpre = "tick=";
-      while (*tpre && p + 1 < sizeof(out)) out[p++] = *tpre++;
-      char nb[12]; int nn = 0; int tv = tick;
-      if (!tv) nb[nn++] = '0';
-      while (tv > 0 && nn < 11) { nb[nn++] = (char)('0' + tv % 10); tv /= 10; }
-      while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
-      const char* nm = " n=";
-      while (*nm && p + 1 < sizeof(out)) out[p++] = *nm++;
-      nn = 0; tv = n < 0 ? 0 : n;
-      if (!tv) nb[nn++] = '0';
-      while (tv > 0 && nn < 11) { nb[nn++] = (char)('0' + tv % 10); tv /= 10; }
-      while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
-      if (p + 2 < sizeof(out)) { out[p++] = '\r'; out[p++] = '\n'; }
-      for (int i = 0; i < n && i < 16 && p + 64 < sizeof(out); ++i) {
-        sdk::Vec3 s{};
-        bool vis = kCs2Adapter.WorldToScreen(ctx, ps[i].pos, s);
-        if (!vis) continue;
-        int vals[5] = { i, (int)s.x, (int)s.y, ps[i].health, ps[i].team };
-        for (int k = 0; k < 5; ++k) {
-          if (k) { if (p + 1 < sizeof(out)) out[p++] = ' '; }
-          int vv = vals[k];
-          if (vv < 0) { if (p + 1 < sizeof(out)) out[p++] = '-'; vv = -vv; }
-          nn = 0;
-          if (!vv) nb[nn++] = '0';
-          while (vv > 0 && nn < 11) { nb[nn++] = (char)('0' + vv % 10); vv /= 10; }
-          while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
+      // render log: "tick=N n=M" then per visible player "i fx fy hx hy w h hp team"
+      AppId(out, sizeof(out), &p, vacsafe::str::SID_t_tick);
+      AppInt(out, sizeof(out), &p, tick);
+      AppId(out, sizeof(out), &p, vacsafe::str::SID_t_n);
+      AppInt(out, sizeof(out), &p, n);
+      AppStr(out, sizeof(out), &p, "\r\n");
+      int drawn = 0, skipped = 0;
+      for (int i = 0; i < n && p + 80 < sizeof(out); ++i) {
+        sdk::Vec3 feet{}, head{}, sf{}, sh{};
+        feet = ps[i].pos;
+        head = ps[i].pos;
+        head.z += 72.0f;
+        bool vf = kCs2Adapter.WorldToScreen(ctx, feet, sf);
+        bool vh = kCs2Adapter.WorldToScreen(ctx, head, sh);
+        if (!vf || !vh) { ++skipped; continue; }
+        int fx = (int)sf.x, fy = (int)sf.y, hx = (int)sh.x, hy = (int)sh.y;
+        int h = fy - hy;
+        if (h <= 0 || h > 4096) { ++skipped; continue; }
+        int w = h / 2;
+        int vals[8] = { i, fx, fy, hx, hy, w, h, ps[i].health };
+        for (int k = 0; k < 8; ++k) {
+          if (k) AppStr(out, sizeof(out), &p, " ");
+          AppInt(out, sizeof(out), &p, vals[k]);
         }
-        if (p + 2 < sizeof(out)) { out[p++] = '\r'; out[p++] = '\n'; }
+        AppStr(out, sizeof(out), &p, " ");
+        AppInt(out, sizeof(out), &p, ps[i].team);
+        AppStr(out, sizeof(out), &p, "\r\n");
+        ++drawn;
       }
       out[p] = 0;
-      char rel[32];
-      vacsafe::str::CopyTo(vacsafe::str::SID_esp_rel, rel, sizeof(rel));
-      char tmp[MAX_PATH] = {0};
-      DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
-      if (!tn || tn >= sizeof(tmp) - 32) continue;
-      char* dst = tmp + tn;
-      for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
-      *dst = 0;
-      HANDLE f = api->createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-      if (f == INVALID_HANDLE_VALUE) continue;
-      DWORD w = 0;
-      api->writeFile(f, out, (DWORD)p, &w, nullptr);
-      api->close(f);
+      char dbg[128]{};
+      size_t q = 0;
+      AppId(dbg, sizeof(dbg), &q, vacsafe::str::SID_t_tick);
+      AppInt(dbg, sizeof(dbg), &q, tick);
+      AppId(dbg, sizeof(dbg), &q, vacsafe::str::SID_t_n);
+      AppInt(dbg, sizeof(dbg), &q, n);
+      AppId(dbg, sizeof(dbg), &q, vacsafe::str::SID_t_drawn);
+      AppInt(dbg, sizeof(dbg), &q, drawn);
+      AppId(dbg, sizeof(dbg), &q, vacsafe::str::SID_t_skip);
+      AppInt(dbg, sizeof(dbg), &q, skipped);
+      AppStr(dbg, sizeof(dbg), &q, "\r\n");
+      WriteTickFiles(api, out, p, dbg, q);
     } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
   }
 }
