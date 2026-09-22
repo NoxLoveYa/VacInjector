@@ -87,7 +87,7 @@ static DWORD WINAPI InitThread(LPVOID param) {
   InitMark(ok ? "205-init-ok" : "205-init-fail");
   vacsafe::Cs2Proof(&ctx, &g_api);
   InitMark("206-proof-done");
-  vacsafe::RenderStart(ad, &ctx, &g_api, hMod); // GDI validation pass (no hooks)
+  vacsafe::RenderStart(ad, &ctx, &g_api, param); // GDI validation pass (no hooks)
   vacsafe::EspLog(&ctx, &g_api); // 60s ESP snapshot loop, then thread exits
   InitMark("207-esp-done");
   return 0;
