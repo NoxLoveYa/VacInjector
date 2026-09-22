@@ -507,18 +507,23 @@ static uintptr_t WalkIndex(sdk::GameContext* ctx, int idx) {
   return sdk::Read<uintptr_t>(chunk + 0x70 * (uintptr_t)(idx & 0x1FF));
 }
 
-static bool IsController(uintptr_t ent) {
+static bool IsController(uintptr_t ent, unsigned* diag) {
   // Build 14181 VERIFIED (external walk, 170 named entities): designer char* at
   // identity+0x20 (identity = [ent+0x10]). Old +0x8/+0x8 chain reads garbage here.
+  // diag bits: 1=saw-identity 2=name-read-ok 4=matched.
   uintptr_t id = sdk::Read<uintptr_t>(ent + 0x10);
   if (!id) return false;
+  if (diag) *diag |= 1;
   uintptr_t nm = sdk::Read<uintptr_t>(id + 0x20);
   if (!nm) return false;
   char buf[40]{};
   if (!sdk::ReadBuf(nm, buf, sizeof(buf) - 1)) return false;
+  if (diag) *diag |= 2;
   char want[40];
   vacsafe::str::CopyTo(vacsafe::str::SID_des_controller, want, sizeof(want));
-  return NameIs(buf, want);
+  bool m = NameIs(buf, want);
+  if (m && diag) *diag |= 4;
+  return m;
 }
 
 static int Cs2Players(sdk::GameContext* ctx, sdk::Player* out, int max) {
@@ -532,9 +537,13 @@ static int Cs2Players(sdk::GameContext* ctx, sdk::Player* out, int max) {
     bool haveFields = (ctx->priv[4] != 0) && offHp > 0 && offTeam > 0 && offPawn > 0;
     if (!haveFields) return 0; // schema-gated: controllers need field offsets
     int n = 0;
+    unsigned dSeen = 0;
     for (int i = 1; i <= 64 && n < max; ++i) {
       uintptr_t ctl = WalkIndex(ctx, i);
-      if (!ctl || !IsController(ctl)) continue;
+      if (!ctl) continue;
+      unsigned dg = 0;
+      if (!IsController(ctl, &dg)) { dSeen |= dg; continue; }
+      dSeen |= dg;
       uint32_t hpawn = sdk::Read<uint32_t>(ctl + (uintptr_t)offPawn);
       if (!hpawn || hpawn == 0xFFFFFFFF) continue;
       uintptr_t pawn = WalkIndex(ctx, (int)(hpawn & 0x7FFF));
@@ -557,6 +566,7 @@ static int Cs2Players(sdk::GameContext* ctx, sdk::Player* out, int max) {
       }
       ++n;
     }
+    ctx->priv[15] = dSeen; // controller-match stages for the heartbeat line
     return n;
   } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
@@ -682,6 +692,8 @@ void EspLog(sdk::GameContext* ctx, const Api* api) {
       AppInt(dbg, sizeof(dbg), &q, drawn);
       AppId(dbg, sizeof(dbg), &q, vacsafe::str::SID_t_skip);
       AppInt(dbg, sizeof(dbg), &q, skipped);
+      AppId(dbg, sizeof(dbg), &q, vacsafe::str::SID_t_ctl);
+      AppInt(dbg, sizeof(dbg), &q, (int)ctx->priv[15]);
       AppStr(dbg, sizeof(dbg), &q, "\r\n");
       WriteTickFiles(api, out, p, dbg, q);
     } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }

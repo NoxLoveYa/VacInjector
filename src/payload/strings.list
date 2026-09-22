@@ -51,6 +51,7 @@ t_tick = tick=
 t_n =  n=
 t_drawn =  drawn=
 t_skip =  skipped=
+t_ctl =  ctl=
 n_cs2 = cs2/source2
 e_noschema = schemasystem.dll absent
 e_noci = CreateInterface missing in schemasystem
