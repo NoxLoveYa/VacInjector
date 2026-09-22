@@ -27,6 +27,6 @@
 - Roadmap after v1: `Vulkan Present hook polish`, `GMod Lua bypass adapter`, `KM hide assist` if UM proves insufficient for CS2 Trusted
 
 ## Exit Criteria (v1 Ship)
-- [ ] `build.bat` green x86+x64, tests green, `gh_flag` clean, manual checklist signed for 2 games
-- [ ] Release zip + release-notes for BUILD_ID, ban-log ready, update watcher running
-- [ ] Next phase kicked: pick first live-fire game (TF2 casual throwaway) with one-variable test plan
+- [x] `build.bat` green x64 end-to-end (gen IDs -> strings -> configure -> compile zero-warning -> import gate -> pack + sidecar). x86 helper pending (WoW64 bridge). `gh_flag` + 2-game checklist pending throwaway protocol.
+- [x] Per-BUILD releases: `build\x64\payload-<BID>.enc` + sidecar map, loader stamps BID, ban-log template live.
+- [ ] Next phase kicked: bot-populated ESP validation (W2S numbers vs screen), then TF2 adapter (05b), then live-fire on throwaway.

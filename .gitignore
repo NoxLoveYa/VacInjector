@@ -7,6 +7,10 @@ build/x86/
 *.sys
 *.enc
 *.log
+*.map
+# generated per build (run build.bat / gen scripts first)
+src/common/build_id.h
+src/common/strings.inc
 .vs/
 out/
 # lab-only, never commit

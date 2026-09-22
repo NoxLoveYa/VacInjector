@@ -280,20 +280,7 @@ static bool ResolveSchema(sdk::GameContext* ctx, SchemaOut* so) {
   return true;
 }
 
-// --- entity list walk (no schema needed): count non-null identities 1..512 ---
-static int CountEntities(sdk::GameContext* ctx) {
-  __try {
-    if (!ctx->entityList) return 0;
-    int n = 0;
-    for (int i = 1; i < 512; ++i) {
-      uintptr_t chunk = sdk::Read<uintptr_t>(ctx->entityList + ((0x8 * (i & 0x7FFF)) >> 9) + 0x10);
-      if (!chunk) continue;
-      uintptr_t ent = sdk::Read<uintptr_t>(chunk + 0x70 * (uintptr_t)(i & 0x1FF));
-      if (ent) ++n;
-    }
-    return n;
-  } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
-}
+// --- entity list walk lives in Cs2Players below (single implementation) ---
 
 static const char* Cs2Name() {
   static char buf[16] = {0};

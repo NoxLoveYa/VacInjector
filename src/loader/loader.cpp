@@ -87,6 +87,7 @@ int main(int argc, char** argv) {
   const bool pauseAtEnd = (argc == 1); // double-clicked: keep window open
   printf("[VacSafe build %s]\n", VACSAFE_BIDSTR);
   if (HasFlag(argc, argv, "--help") || HasFlag(argc, argv, "-h")) { Usage(); MaybePause(pauseAtEnd); return 0; }
+  if (HasFlag(argc, argv, "--version") || HasFlag(argc, argv, "-v")) { printf("VacSafe %s\n", VACSAFE_BIDSTR); MaybePause(pauseAtEnd); return 0; }
 
   std::string game = ArgVal(argc, argv, "--game");
   std::string pidS = ArgVal(argc, argv, "--pid");

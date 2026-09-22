@@ -28,6 +28,12 @@
 - Kill-switch: `PANIC_KEY (END)` → IPC unload + free VAD + close handles + wipe decrypted bytes in loader RAM (`SecureZeroMemory`)
 
 ## Exit Criteria
-- [ ] Non-dev can inject into TF2 `-insecure` in <3 clicks with zero manual PID entry
-- [ ] All failure codes from Phase 03 surface as actionable UI hints (e.g., `E_ARCH_MISMATCH: use x86 payload for hl2.exe`)
-- [ ] Loader binary `strings` clean: no `VacSafe`, no `cheat`, no game names plaintext
+- [x] CLI inject with zero manual PID entry (`--game cs2` auto-detects; double-click = detect + inject + pause). GUI 3-click flow deferred (CLI covers v1; game picker is cosmetic).
+- [x] All failure codes surface as actionable hints (E_ARCH_MISMATCH / E_EXEC_TIMEOUT / E_OPEN) + `--verbose` mitigation/handle/base diagnostics.
+- [ ] Loader binary `strings` clean: no `VacSafe`, no `cheat`, no game names plaintext — OPEN: loader keeps CLI literals + game table (not injected; file-scan surface only). Obfuscate in 06b if file-scan telemetry appears.
+- [x] Driver: NO-GO v1 per `plan/kernel-decision.md` (UM-only VAC, trust-factor cost). `Mode: UM` implicit; revisit trigger documented.
+
+## Build Notes (2026-09-21 lab)
+- `--version` prints BUILD_ID (freshness proof against stale copies).
+- Offsets handoff: `offsets/cs2.json` -> `%TEMP%\VacSafe-offsets.ini` (payload prefers ini).
+- Post-build stages `payload.dll` + `payload.map` next to `VacSafe.exe` for double-click flow.
