@@ -461,13 +461,17 @@ static bool Cs2Init(sdk::GameContext* ctx) {
     Stage(ctx, 95);
   }
   // Screen size for W2S (SM_CXSCREEN=0/SM_CYSCREEN=1 numeric; hashed API).
+  // user32 may be absent on console hosts: fall back to 1920x1080 (validation
+  // only; GUI games always map user32 so production W2S stays exact).
   {
     const vacsafe::Api* api = CtxApi(ctx);
+    int w = 1920, h = 1080;
     if (api && api->getSystemMetrics) {
-      int w = api->getSystemMetrics(0);
-      int h = api->getSystemMetrics(1);
-      if (w > 320 && h > 200 && w < 16384 && h < 16384) { sScrW = w; sScrH = h; }
+      int sw = api->getSystemMetrics(0);
+      int sh = api->getSystemMetrics(1);
+      if (sw > 320 && sw < 16384 && sh > 200 && sh < 16384) { w = sw; h = sh; }
     }
+    sScrW = w; sScrH = h;
   }
   Stage(ctx, 100);
   return true;

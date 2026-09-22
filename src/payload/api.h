@@ -61,7 +61,9 @@ struct Api {
     sleepMs = (SleepFn)nt::GetProcByHash(k32, 0x0E19E5FE);
     readFile = (ReadFileFn)nt::GetProcByHash(k32, 0x71019921);
     getFileSize = (GetFileSizeFn)nt::GetProcByHash(k32, 0x7891C520);
-    return beep && getTempPath && createFile && writeFile && close && disableTl && ods && createThread && getModuleFileName && getSystemMetrics && sleepMs && readFile && getFileSize;
+    // OPTIONAL: user32 may be absent (console hosts). W2S falls back to 1920x1080;
+    // GUI games always map it, so production W2S stays exact.
+    return beep && getTempPath && createFile && writeFile && close && disableTl && ods && createThread && getModuleFileName && sleepMs && readFile && getFileSize;
   }
   // Basename of current process image into out (no CRT). "C:\...\cs2.exe" -> "cs2.exe".
   void ExeName(char* out, size_t cap) const {

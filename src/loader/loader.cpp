@@ -6,6 +6,7 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "injector_core.h"
+#include "nt_api.h"
 #if __has_include("build_id.h")
 #include "build_id.h"
 #endif
@@ -88,6 +89,27 @@ int main(int argc, char** argv) {
   printf("[VacSafe build %s]\n", VACSAFE_BIDSTR);
   if (HasFlag(argc, argv, "--help") || HasFlag(argc, argv, "-h")) { Usage(); MaybePause(pauseAtEnd); return 0; }
   if (HasFlag(argc, argv, "--version") || HasFlag(argc, argv, "-v")) { printf("VacSafe %s\n", VACSAFE_BIDSTR); MaybePause(pauseAtEnd); return 0; }
+  if (HasFlag(argc, argv, "--selftest")) {
+    // Resolve every hashed API the payload needs, in THIS process. Same code (nt_api).
+    struct T { const wchar_t* mod; uint32_t h; const char* name; };
+    static const T tests[] = {
+      {L"kernel32.dll", 0x7C82FBA1, "Beep"}, {L"kernel32.dll", 0x9EF979E9, "GetTempPathA"},
+      {L"kernel32.dll", 0xEB96C5FA, "CreateFileA"}, {L"kernel32.dll", 0x663CECB0, "WriteFile"},
+      {L"kernel32.dll", 0x3870CA07, "CloseHandle"}, {L"kernel32.dll", 0x530574F5, "DisableThreadLibraryCalls"},
+      {L"kernel32.dll", 0x79729F95, "OutputDebugStringA"}, {L"kernel32.dll", 0x7F08F451, "CreateThread"},
+      {L"kernel32.dll", 0x13B8A14D, "GetModuleFileNameA"}, {L"kernel32.dll", 0x0E19E5FE, "Sleep"},
+      {L"kernel32.dll", 0x71019921, "ReadFile"}, {L"kernel32.dll", 0x7891C520, "GetFileSize"},
+      {L"user32.dll", 0xA988C1A1, "GetSystemMetrics(user32)"},
+    };
+    int fails = 0;
+    for (auto& t : tests) {
+      void* p = vacsafe::nt::GetProcByHash(t.mod, t.h);
+      printf("[%s] %-32s %p\n", p ? "ok" : "FAIL", t.name, p);
+      if (!p) ++fails;
+    }
+    printf("selftest: %s\n", fails ? "FAIL" : "ALL OK");
+    return fails ? 1 : 0;
+  }
 
   std::string game = ArgVal(argc, argv, "--game");
   std::string pidS = ArgVal(argc, argv, "--pid");
@@ -241,6 +263,29 @@ int main(int argc, char** argv) {
     printf("[ok] injected base=%p entryCalled=1 stealthMask=0x%X pid=%lu\n",
            r.injectedBase, r.stealthMask, (unsigned long)pid);
     Beep(880, 200); // audible proof, loader-side (safe: own process/thread)
+    // Mirror payload proof files: init trail, game proof, ESP snapshot, heartbeat.
+    Sleep(3500); // let InitThread finish init+proof (ESP keeps ticking after)
+    static const char* kProofFiles[] = {
+      "VacSafe-smoke.txt", "VacSafe-init.txt", "VacSafe-cs2.txt",
+      "VacSafe-dbg.txt", "VacSafe-esp.txt",
+    };
+    char tmp[MAX_PATH] = {0};
+    if (GetTempPathA(sizeof(tmp), tmp)) {
+      for (auto rel : kProofFiles) {
+        std::string path = std::string(tmp) + rel;
+        FILE* f = nullptr;
+        if (fopen_s(&f, path.c_str(), "r") != 0 || !f) continue;
+        printf("--- %s ---\n", rel);
+        char line[512];
+        int shown = 0;
+        while (fgets(line, sizeof(line), f) && shown < 18) {
+          fputs(line, stdout);
+          if (line[0] && line[strlen(line) - 1] != '\n') printf("\n");
+          ++shown;
+        }
+        fclose(f);
+      }
+    }
     MaybePause(pauseAtEnd);
     return 0;
   }
