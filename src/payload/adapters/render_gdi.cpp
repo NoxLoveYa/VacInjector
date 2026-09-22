@@ -31,6 +31,7 @@ typedef int (WINAPI* LineToFn)(void*, int, int);
 typedef int (WINAPI* IsVisFn)(void*);
 typedef int (WINAPI* GetMetricsFn)(int);
 typedef int (WINAPI* GetRectFn)(void*, void*);
+typedef uint32_t (WINAPI* GetLastErrFn)();
 
 struct Gdi {
   EnumWindowsFn enumWin = nullptr;
@@ -194,6 +195,45 @@ static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn)
   } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+static void WriteRenderStatusGLE(const Api* api, void* hwnd, int frames, int drawn, uint32_t gle) {
+  __try {
+    WriteRenderStatus(api, hwnd, frames, drawn);
+    // append " gle=N" by re-read + rewrite (diag only, runs once)
+    char rel[32];
+    vacsafe::str::CopyTo(vacsafe::str::SID_render_rel, rel, sizeof(rel));
+    char tmp[MAX_PATH] = {0};
+    DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
+    if (!tn || tn >= sizeof(tmp) - 32) return;
+    char* dst = tmp + tn;
+    for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
+    *dst = 0;
+    char ob[160]{};
+    size_t q = 0;
+    HANDLE fr = api->createFile(tmp, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (fr != INVALID_HANDLE_VALUE) {
+      DWORD r = 0;
+      api->readFile(fr, ob, (DWORD)sizeof(ob) - 24, &r, nullptr);
+      api->close(fr);
+      q = r;
+    }
+    char gb[16];
+    vacsafe::str::CopyTo(vacsafe::str::SID_t_gle, gb, sizeof(gb));
+    for (size_t k = 0; gb[k] && q + 1 < sizeof(ob); ++k) ob[q++] = gb[k];
+    char nb[12]; int nn = 0;
+    uint32_t v = gle;
+    if (!v) nb[nn++] = '0';
+    while (v > 0 && nn < 10) { nb[nn++] = (char)('0' + v % 10); v /= 10; }
+    while (nn > 0 && q + 1 < sizeof(ob)) ob[q++] = nb[--nn];
+    if (q + 2 < sizeof(ob)) { ob[q++] = '\r'; ob[q++] = '\n'; }
+    ob[q] = 0;
+    HANDLE fw = api->createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (fw == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0;
+    api->writeFile(fw, ob, (DWORD)q, &w, nullptr);
+    api->close(fw);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 static void DrawPlayer(void* hdc, const sdk::Player& pl) {
   sdk::Vec3 sf{}, sh{};
   sdk::Vec3 feet = pl.pos;
@@ -297,7 +337,15 @@ void RenderStart(const sdk::IGameAdapter* ad, sdk::GameContext* ctx, const Api* 
   DWORD tid = 0;
   HANDLE h = api->createThread(nullptr, 0, RenderThread, nullptr, 0, &tid);
   // R-3 marker (even on failure): proves whether the thread was ever created.
-  WriteRenderStatus(api, h, -3, (int)tid);
+  // On failure also logs GetLastError (djb2 GetLastError=0x2082EAE3).
+  uint32_t gle = 0;
+  {
+    wchar_t k32[16];
+    vacsafe::str::CopyToW(vacsafe::str::SID_mod_kernel32, k32, 16);
+    void* f = nt::GetProcByHash(k32, 0x2082EAE3);
+    if (f) gle = ((GetLastErrFn)f)();
+  }
+  WriteRenderStatusGLE(api, h, -3, (int)tid, gle);
   if (h && api->close) api->close(h);
 }
 

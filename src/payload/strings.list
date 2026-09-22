@@ -53,6 +53,7 @@ t_n =  n=
 t_drawn =  drawn=
 t_skip =  skipped=
 t_ctl =  ctl=
+t_gle =  gle=
 t_tag = VACSAFE
 n_cs2 = cs2/source2
 e_noschema = schemasystem.dll absent
