@@ -45,9 +45,9 @@ void* GetModuleBase(const wchar_t* module) {
   } __except (EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
-static void* ExportLookup(void* modBase, uint32_t hash, const char* name) {
+static void* ExportLookupRec(void* modBase, uint32_t hash, const char* name, int depth) {
   auto* dos = (IMAGE_DOS_HEADER*)modBase;
-  if (!modBase || dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+  if (!modBase || depth > 3 || dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
   auto* nt = (IMAGE_NT_HEADERS64*)((uint8_t*)modBase + dos->e_lfanew);
   if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
   if (nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT) return nullptr;
@@ -64,10 +64,37 @@ static void* ExportLookup(void* modBase, uint32_t hash, const char* name) {
     WORD ord = ords[i];
     if ((DWORD)ord >= dir->NumberOfFunctions) return nullptr;
     DWORD rva = funcs[ord];
-    if (rva >= exp.VirtualAddress && rva < exp.VirtualAddress + exp.Size) return nullptr; // forwarded
+    if (rva >= exp.VirtualAddress && rva < exp.VirtualAddress + exp.Size) {
+      // Forwarded export ("GDI32.Rectangle"): follow into the target module.
+      const char* fwd = (const char*)((uint8_t*)modBase + rva);
+      const char* dot = nullptr;
+      for (const char* p = fwd; *p && (size_t)(p - fwd) < 64; ++p) {
+        if (*p == '.') { dot = p; break; }
+      }
+      if (!dot || dot == fwd) return nullptr;
+      // module part -> wide name + ".dll" (caller stack, no CRT)
+      wchar_t wmod[32]{};
+      size_t k = 0;
+      for (const char* p = fwd; p < dot && k + 5 < 32; ++p, ++k) {
+        char c = *p;
+        if (c >= 'a' && c <= 'z') c -= 32; // compare is case-insensitive anyway
+        wmod[k] = (wchar_t)c;
+      }
+      wmod[k++] = L'.';
+      wmod[k++] = L'd'; wmod[k++] = L'l'; wmod[k++] = L'l';
+      wmod[k] = 0;
+      void* tgt = GetModuleBase(wmod);
+      if (!tgt) return nullptr;
+      if (dot[1] == '#') return nullptr; // ordinal forward: unsupported, fail closed
+      return ExportLookupRec(tgt, 0, dot + 1, depth + 1);
+    }
     return (uint8_t*)modBase + rva;
   }
   return nullptr;
+}
+
+static void* ExportLookup(void* modBase, uint32_t hash, const char* name) {
+  return ExportLookupRec(modBase, hash, name, 0);
 }
 
 void* GetProcByHash(const wchar_t* module, uint32_t hash) {

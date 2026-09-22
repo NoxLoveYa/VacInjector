@@ -51,6 +51,7 @@ struct Gdi {
   IsVisFn isVis = nullptr;
   GetMetricsFn getMetrics = nullptr;
   GetRectFn getRect = nullptr;
+  uint32_t resBits = 0; // diag: bit i = fn i resolved
   // djb2: EnumWindows=0x94CFDCC5 GetWindowThreadProcessId=0xA58EDBE1 GetDC=0x0D3D24AC
   // ReleaseDC=0xE43871CD Rectangle=0x5267005A CreatePen=0xED6925BC SelectObject=0x7CF4FD7C
   // DeleteObject=0xCC68186F GetStockObject=0xD7460980 SetBkMode=0x6F828843
@@ -59,26 +60,44 @@ struct Gdi {
   bool Resolve() {
     wchar_t u32[16];
     vacsafe::str::CopyToW(vacsafe::str::SID_mod_user32, u32, 16);
-    enumWin = (EnumWindowsFn)nt::GetProcByHash(u32, 0x94CFDCC5);
-    wndThread = (GetWndThreadFn)nt::GetProcByHash(u32, 0xA58EDBE1);
-    getDc = (GetDcFn)nt::GetProcByHash(u32, 0x0D3D24AC);
-    releaseDc = (ReleaseDcFn)nt::GetProcByHash(u32, 0xE43871CD);
-    rect = (RectFn)nt::GetProcByHash(u32, 0x5267005A);
-    createPen = (CreatePenFn)nt::GetProcByHash(u32, 0xED6925BC);
-    selObj = (SelObjFn)nt::GetProcByHash(u32, 0x7CF4FD7C);
-    delObj = (DelObjFn)nt::GetProcByHash(u32, 0xCC68186F);
-    getStock = (GetStockFn)nt::GetProcByHash(u32, 0xD7460980);
-    bkMode = (BkModeFn)nt::GetProcByHash(u32, 0x6F828843);
-    textColor = (TextColorFn)nt::GetProcByHash(u32, 0x41936715);
-    textOut = (TextOutFn)nt::GetProcByHash(u32, 0x805294C3);
-    moveTo = (MoveToFn)nt::GetProcByHash(u32, 0x0694FFDC);
-    lineTo = (LineToFn)nt::GetProcByHash(u32, 0xC0D12C10);
-    isVis = (IsVisFn)nt::GetProcByHash(u32, 0xE35AC807);
+    void* f[15];
+    f[0] = nt::GetProcByHash(u32, 0x94CFDCC5);
+    f[1] = nt::GetProcByHash(u32, 0xA58EDBE1);
+    f[2] = nt::GetProcByHash(u32, 0x0D3D24AC);
+    f[3] = nt::GetProcByHash(u32, 0xE43871CD);
+    f[4] = nt::GetProcByHash(u32, 0x5267005A);
+    f[5] = nt::GetProcByHash(u32, 0xED6925BC);
+    f[6] = nt::GetProcByHash(u32, 0x7CF4FD7C);
+    f[7] = nt::GetProcByHash(u32, 0xCC68186F);
+    f[8] = nt::GetProcByHash(u32, 0xD7460980);
+    f[9] = nt::GetProcByHash(u32, 0x6F828843);
+    f[10] = nt::GetProcByHash(u32, 0x41936715);
+    f[11] = nt::GetProcByHash(u32, 0x805294C3);
+    f[12] = nt::GetProcByHash(u32, 0x0694FFDC);
+    f[13] = nt::GetProcByHash(u32, 0xC0D12C10);
+    f[14] = nt::GetProcByHash(u32, 0xE35AC807);
+    resBits = 0;
+    for (int i = 0; i < 15; ++i) if (f[i]) resBits |= (1u << i);
+    if (resBits != 0x7FFF) return false;
+    enumWin = (EnumWindowsFn)f[0];
+    wndThread = (GetWndThreadFn)f[1];
+    getDc = (GetDcFn)f[2];
+    releaseDc = (ReleaseDcFn)f[3];
+    rect = (RectFn)f[4];
+    createPen = (CreatePenFn)f[5];
+    selObj = (SelObjFn)f[6];
+    delObj = (DelObjFn)f[7];
+    getStock = (GetStockFn)f[8];
+    bkMode = (BkModeFn)f[9];
+    textColor = (TextColorFn)f[10];
+    textOut = (TextOutFn)f[11];
+    moveTo = (MoveToFn)f[12];
+    lineTo = (LineToFn)f[13];
+    isVis = (IsVisFn)f[14];
     getMetrics = (GetMetricsFn)nt::GetProcByHash(u32, 0xA988C1A1);
     getRect = (GetRectFn)nt::GetProcByHash(u32, 0xF68C840B);
-    return enumWin && wndThread && getDc && releaseDc && rect && createPen &&
-           selObj && delObj && getStock && bkMode && textColor && textOut &&
-           moveTo && lineTo && isVis && getMetrics && getRect;
+    if (!getMetrics || !getRect) return false;
+    return true;
   }
 };
 
@@ -280,7 +299,8 @@ static DWORD WINAPI RenderThread(LPVOID p) {
   // Startup stages to render.txt (R1 resolve, R2 hwnd, then frames): pinpoints
   // silent early death (no markers = died before first status write).
   if (!g_gdi.Resolve()) {
-    if (s_api) WriteRenderStatus(s_api, nullptr, -1, 0, false, 0);
+    // drawn carries the resolve bitmap (bit i = fn i ok) for forensics.
+    if (s_api) WriteRenderStatus(s_api, nullptr, -1, (int)g_gdi.resBits, false, 0);
     return 1;
   }
   // find our game window once (first visible top-level of our pid)
