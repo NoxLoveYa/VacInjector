@@ -3,3 +3,12 @@ target_include_directories(payload PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ../common
 target_link_libraries(payload PRIVATE vacsafe_sdk vacsafe_stealth vacsafe_common)
 set_target_properties(payload PROPERTIES OUTPUT_NAME "payload")
 target_link_options(payload PRIVATE "/MAP:$<TARGET_FILE_DIR:payload>/payload.map")
+# Bisect builds: -DVACSAFE_BISECT_S1=ON for entry-only payload (crash isolation).
+option(VACSAFE_BISECT_S1 "Entry-only payload (no smoke/thread)" OFF)
+if (VACSAFE_BISECT_S1)
+  target_compile_definitions(payload PRIVATE VACSAFE_BISECT_S1)
+endif()
+option(VACSAFE_BISECT_S2 "Entry+smoke payload (no thread)" OFF)
+if (VACSAFE_BISECT_S2)
+  target_compile_definitions(payload PRIVATE VACSAFE_BISECT_S2)
+endif()

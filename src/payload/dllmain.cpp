@@ -1,6 +1,6 @@
 #include <windows.h>
 #include "stealth.h"
-#include "obf.h"
+#include "strings.inc"
 #include "api.h"
 #include "game_adapter.h"
 
@@ -24,11 +24,10 @@ Api g_api;
 static void SmokeProof() {
   // Raw-entry safe: kernel32 only, no CRT (no snprintf/strlen/printf-family:
   // UCRT per-thread data is never initialized when CRT startup is bypassed).
-  // Sensitive literals are compile-time encrypted (stack plaintext only).
-  // NOTE: Beep() deliberately NOT called in-game: on exclusive-audio targets it
-  // re-enters the audio stack from a hijacked thread (suspect in CS2 fastfails).
-  // Audible proof returns via loader-side beep instead (see VacSafe.cpp TODO).
-  VACSAFE_OBF_BUF(rel, "VacSafe-smoke.txt");
+  // Sensitive strings come from codegen (strings.inc byte arrays); TU holds
+  // zero plaintext. NOTE: Beep() deliberately NOT called in-game.
+  char rel[32];
+  vacsafe::str::CopyTo(vacsafe::str::SID_smoke_rel, rel, sizeof(rel));
   char tmp[MAX_PATH] = {0};
   DWORD n = g_api.getTempPath(sizeof(tmp) - (DWORD)sizeof(rel) - 1, tmp);
   if (!n || n >= sizeof(tmp) - sizeof(rel) - 1) return;
@@ -37,24 +36,55 @@ static void SmokeProof() {
   *dst = 0;
   HANDLE f = g_api.createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (f != INVALID_HANDLE_VALUE) {
-    VACSAFE_OBF_BUF(body, "VacSafe injected OK\r\n");
-    DWORD w = 0;
-    g_api.writeFile(f, body, (DWORD)sizeof(body) - 1, &w, nullptr);
+    char body[32];
+    vacsafe::str::CopyTo(vacsafe::str::SID_smoke_body, body, sizeof(body));
+    DWORD w = 0, len = 0;
+    while (body[len]) ++len;
+    g_api.writeFile(f, body, len, &w, nullptr);
     g_api.close(f);
   }
-  g_api.ods(VACSAFE_OBF("[VacSafe] payload attached."));
+  char msg[48];
+  vacsafe::str::CopyTo(vacsafe::str::SID_smoke_msg, msg, sizeof(msg));
+  g_api.ods(msg);
+}
+
+static void InitMark(const char* tag) {
+  // InitThread breadcrumb trail (VacSafe-init.txt, separate so adapter stages stay intact).
+  __try {
+    if (!tag || !tag[0]) return;
+    char rel[32];
+    vacsafe::str::CopyTo(vacsafe::str::SID_init_rel, rel, sizeof(rel));
+    char tmp[MAX_PATH] = {0};
+    DWORD n = g_api.getTempPath(sizeof(tmp) - 32, tmp);
+    if (!n || n >= sizeof(tmp) - 32) return;
+    char* dst = tmp + n;
+    for (size_t i = 0; rel[i]; ++i) *dst++ = rel[i];
+    *dst = 0;
+    HANDLE f = g_api.createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0, len = 0;
+    while (tag[len]) ++len;
+    g_api.writeFile(f, tag, len, &w, nullptr);
+    g_api.close(f);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 static DWORD WINAPI InitThread(LPVOID param) {
+  InitMark("201-hide-enter");
   (void)param;
   vacsafe::stealth::HideCurrentThreadPub();
+  InitMark("202-hide-done");
   vacsafe::sdk::GameContext ctx{};
   g_api.ExeName(ctx.exeName, sizeof(ctx.exeName));
+  InitMark("203-exe-done");
   ctx.priv[7] = (uintptr_t)&g_api; // host API cookie for staged file IO
   const vacsafe::sdk::IGameAdapter* ad = vacsafe::CreateAdapterForExe(ctx.exeName);
+  InitMark(ad ? "204-adapter-cs2" : "204-adapter-null");
   if (!ad) return 0; // non-game host (busyloop/cmd lab): smoke proof is the deliverable
-  ad->Init(&ctx);    // fills ctx or err; never throws, never CRTs
+  bool ok = ad->Init(&ctx); // fills ctx or err; never throws, never CRTs
+  InitMark(ok ? "205-init-ok" : "205-init-fail");
   vacsafe::Cs2Proof(&ctx, &g_api);
+  InitMark("206-proof-done");
   return 0;
 }
 
@@ -67,10 +97,20 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
     if (!vacsafe::g_api.Resolve()) return TRUE; // fail closed
     vacsafe::g_api.disableTl(hMod);
     vacsafe::stealth::ApplyPost(hMod);
+#ifdef VACSAFE_BISECT_S1
+    // S1: entry only (no smoke, no thread). Isolates entry/stealth/restore vs smoke/thread.
+    return TRUE;
+#else
     vacsafe::SmokeProof();
+#ifdef VACSAFE_BISECT_S2
+    // S2: entry + smoke proof (no thread). Isolates smoke vs init-thread/adapter.
+    return TRUE;
+#else
     DWORD tid = 0;
     HANDLE h = vacsafe::g_api.createThread(nullptr, 0, vacsafe::InitThread, hMod, 0, &tid);
     if (h) vacsafe::g_api.close(h); // fire-and-forget; thread hides itself + exits
+#endif
+#endif
   }
   return TRUE;
 }

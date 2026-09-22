@@ -1,0 +1,61 @@
+# Payload string inventory: literals live HERE (source-side, never scanned).
+# gen_strings.py emits src/common/strings.inc as XORed byte arrays, so consuming
+# TUs contain ZERO plaintext. Format: ID = literal (one per line, # comments).
+smoke_rel = VacSafe-smoke.txt
+init_rel = VacSafe-init.txt
+smoke_body = VacSafe injected OK\r\n
+smoke_msg = [VacSafe] payload attached.
+proof_rel = VacSafe-cs2.txt
+api_createinterface = CreateInterface
+api_schemasys = SchemaSystem_001
+mod_client = client.dll
+mod_engine2 = engine2.dll
+mod_engine = engine.dll
+mod_schema = schemasystem.dll
+mod_kernel32 = kernel32.dll
+mod_ntdll = ntdll.dll
+cls_pawn = C_CSPlayerPawn
+cls_node = CGameSceneNode
+fld_health = m_iHealth
+fld_team = m_iTeamNum
+fld_scene = m_pGameSceneNode
+fld_origin = m_vecOrigin
+d_stage = stage=
+d_exe =  exe=
+d_err =  err=
+d_a =  a=
+d_b =  b=
+d_map = map mz=
+d_t =  t=
+d_ninst =  ninst=
+d_unreadable = UNREADABLE
+d_sigstale = sig stale: 
+d_base =  base=
+d_size =  size=
+d_mz =  mz=
+d_pm =  pm=
+w_ent = dwEntityList
+w_lp = dwLocalPlayerPawn
+w_vm = dwViewMatrix
+e_noschema = schemasystem.dll absent
+e_noci = CreateInterface missing in schemasystem
+e_nosys = SchemaSystem_001 capture failed
+e_noscope = schema scope client.dll missing (vtable stale?)
+e_nopawn = C_CSPlayerPawn missing in schema
+e_vt13 = schema vtable[13] outside modules (stale index?)
+e_vt2 = schema vtable[2] outside modules (stale index?)
+e_noclient = client.dll not loaded (wrong game?)
+e_badclient = client.dll headers unreadable
+d_note = \r\nnote=
+p_exe = exe=
+p_client = client=
+p_ent = entityList=
+p_lp = localPlayer=
+p_vm = viewMatrix=
+p_schema = schema=
+p_hoff =  healthOff=
+p_toff =  teamOff=
+p_ents = entities=
+p_hp =  p0hp=
+p_team =  p0team=
+p_bid = \r\nbid=

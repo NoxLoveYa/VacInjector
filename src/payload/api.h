@@ -1,6 +1,7 @@
 #pragma once
 #include <windows.h>
 #include "nt_api.h"
+#include "strings.inc"
 // Shared hashed kernel32 API table for payload-owned code (Phase 04/05).
 // Zero plaintext imports: hashes are djb2 of export names (computed offline).
 // CRT-free: safe on the raw-DllMain path.
@@ -30,15 +31,17 @@ struct Api {
   // WriteFile=0x663CECB0 CloseHandle=0x3870CA07 DisableThreadLibraryCalls=0x530574F5
   // OutputDebugStringA=0x79729F95 CreateThread=0x7F08F451 GetModuleFileNameA=0x13B8A14D
   bool Resolve() {
-    beep = (BeepFn)nt::GetProcByHash(L"kernel32.dll", 0x7C82FBA1);
-    getTempPath = (GetTempPathAFn)nt::GetProcByHash(L"kernel32.dll", 0x9EF979E9);
-    createFile = (CreateFileAFn)nt::GetProcByHash(L"kernel32.dll", 0xEB96C5FA);
-    writeFile = (WriteFileFn)nt::GetProcByHash(L"kernel32.dll", 0x663CECB0);
-    close = (CloseHandleFn)nt::GetProcByHash(L"kernel32.dll", 0x3870CA07);
-    disableTl = (DisableTlFn)nt::GetProcByHash(L"kernel32.dll", 0x530574F5);
-    ods = (OdsFn)nt::GetProcByHash(L"kernel32.dll", 0x79729F95);
-    createThread = (CreateThreadFn)nt::GetProcByHash(L"kernel32.dll", 0x7F08F451);
-    getModuleFileName = (GetModuleFileNameAFn)nt::GetProcByHash(L"kernel32.dll", 0x13B8A14D);
+    wchar_t k32[16];
+    vacsafe::str::CopyToW(vacsafe::str::SID_mod_kernel32, k32, 16);
+    beep = (BeepFn)nt::GetProcByHash(k32, 0x7C82FBA1);
+    getTempPath = (GetTempPathAFn)nt::GetProcByHash(k32, 0x9EF979E9);
+    createFile = (CreateFileAFn)nt::GetProcByHash(k32, 0xEB96C5FA);
+    writeFile = (WriteFileFn)nt::GetProcByHash(k32, 0x663CECB0);
+    close = (CloseHandleFn)nt::GetProcByHash(k32, 0x3870CA07);
+    disableTl = (DisableTlFn)nt::GetProcByHash(k32, 0x530574F5);
+    ods = (OdsFn)nt::GetProcByHash(k32, 0x79729F95);
+    createThread = (CreateThreadFn)nt::GetProcByHash(k32, 0x7F08F451);
+    getModuleFileName = (GetModuleFileNameAFn)nt::GetProcByHash(k32, 0x13B8A14D);
     return beep && getTempPath && createFile && writeFile && close && disableTl && ods && createThread && getModuleFileName;
   }
   // Basename of current process image into out (no CRT). "C:\...\cs2.exe" -> "cs2.exe".

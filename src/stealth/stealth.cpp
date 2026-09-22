@@ -1,5 +1,6 @@
 #include "stealth.h"
 #include "peb.h"
+#include "strings.inc"
 #include <windows.h>
 #include <winternl.h>
 #include <cstddef>
@@ -77,7 +78,11 @@ static void* GetProcByHash(HMODULE mod, uint32_t hash) {
 
 static HMODULE NtModule() {
   static HMODULE cached = nullptr;
-  if (!cached) cached = FindModuleByName(L"ntdll.dll");
+  if (!cached) {
+    wchar_t nm[16];
+    vacsafe::str::CopyToW(vacsafe::str::SID_mod_ntdll, nm, 16);
+    cached = FindModuleByName(nm);
+  }
   return cached;
 }
 

@@ -1,8 +1,14 @@
 #include "game_adapter.h"
 #include "nt_api.h"
 #include "peb.h"
-#include "obf.h"
+#include "strings.inc"
 #include "../api.h"
+#include <windows.h>
+#include <winternl.h>
+#include <cstddef>
+
+// Stack-decrypt a string ID for immediate call-arg use (never stored).
+#define STRBUF(name, sid) char name[64]; vacsafe::str::CopyTo(vacsafe::str::sid, name, sizeof(name))
 #include <windows.h>
 #include <winternl.h>
 #include <cstddef>
@@ -25,13 +31,35 @@ static const vacsafe::Api* CtxApi(sdk::GameContext* ctx) {
 }
 
 // Minimal stage writer: "stage=N exe=X [a=0x.. b=0x..] err=Y". Overwrites proof file.
+// Append helpers: decrypted-ID text + hex, no literals, no CRT.
+static void AppId(char* dst, size_t cap, size_t* pos, unsigned id) {
+  char tmp[80];
+  vacsafe::str::CopyTo(id, tmp, sizeof(tmp));
+  for (size_t i = 0; tmp[i] && *pos + 1 < cap; ++i) dst[(*pos)++] = tmp[i];
+}
+static void AppHex(char* dst, size_t cap, size_t* pos, uint64_t v, bool skip0x) {
+  char hx[20];
+  sdk::U64ToHex(hx, sizeof(hx), v);
+  for (size_t i = skip0x ? 2 : 0; hx[i] && *pos + 1 < cap; ++i) dst[(*pos)++] = hx[i];
+}
+static void AppStr(char* dst, size_t cap, size_t* pos, const char* s) {
+  if (!s) return;
+  for (size_t i = 0; s[i] && *pos + 1 < cap; ++i) dst[(*pos)++] = s[i];
+}
+static void SetErrId(sdk::GameContext* ctx, unsigned id) {
+  char tmp[96];
+  vacsafe::str::CopyTo(id, tmp, sizeof(tmp));
+  sdk::SetErr(ctx, tmp);
+}
+
 static void StageDetail(sdk::GameContext* ctx, uint32_t n, uint64_t a, uint64_t b) {
   if (!ctx) return;
   ctx->priv[5] = n;
   __try {
     const vacsafe::Api* api = CtxApi(ctx);
     if (!api || !api->createFile || !api->getTempPath) return;
-    VACSAFE_OBF_BUF(rel, "VacSafe-cs2.txt");
+    char rel[32];
+    vacsafe::str::CopyTo(vacsafe::str::SID_proof_rel, rel, sizeof(rel));
     char tmp[MAX_PATH] = {0};
     DWORD tn = api->getTempPath(sizeof(tmp) - (DWORD)sizeof(rel) - 1, tmp);
     if (!tn || tn >= sizeof(tmp) - sizeof(rel) - 1) return;
@@ -40,30 +68,22 @@ static void StageDetail(sdk::GameContext* ctx, uint32_t n, uint64_t a, uint64_t 
     *dst = 0;
     char out[256]{};
     size_t p = 0;
-    const char* pre = "stage=";
-    while (*pre && p + 1 < sizeof(out)) out[p++] = *pre++;
+    AppId(out, sizeof(out), &p, vacsafe::str::SID_d_stage);
     char nb[12]; int nn = 0;
     uint32_t v = n;
     if (!v) nb[nn++] = '0';
     while (v && nn < 11) { nb[nn++] = (char)('0' + v % 10); v /= 10; }
     while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
-    const char* mid = " exe=";
-    while (*mid && p + 1 < sizeof(out)) out[p++] = *mid++;
+    AppId(out, sizeof(out), &p, vacsafe::str::SID_d_exe);
     for (size_t i = 0; ctx->exeName[i] && p + 1 < sizeof(out); ++i) out[p++] = ctx->exeName[i];
     if (a || b) {
-      const char* ap = " a=";
-      while (*ap && p + 1 < sizeof(out)) out[p++] = *ap++;
-      char hx[20];
-      sdk::U64ToHex(hx, sizeof(hx), a);
-      for (size_t i = 0; hx[i] && p + 1 < sizeof(out); ++i) out[p++] = hx[i];
-      const char* bp = " b=";
-      while (*bp && p + 1 < sizeof(out)) out[p++] = *bp++;
-      sdk::U64ToHex(hx, sizeof(hx), b);
-      for (size_t i = 0; hx[i] && p + 1 < sizeof(out); ++i) out[p++] = hx[i];
+      AppId(out, sizeof(out), &p, vacsafe::str::SID_d_a);
+      AppHex(out, sizeof(out), &p, a, false);
+      AppId(out, sizeof(out), &p, vacsafe::str::SID_d_b);
+      AppHex(out, sizeof(out), &p, b, false);
     }
     if (ctx->err[0]) {
-      const char* e = " err=";
-      while (*e && p + 1 < sizeof(out)) out[p++] = *e++;
+      AppId(out, sizeof(out), &p, vacsafe::str::SID_d_err);
       for (size_t i = 0; ctx->err[i] && p + 1 < sizeof(out); ++i) out[p++] = ctx->err[i];
     }
     if (p + 2 < sizeof(out)) { out[p++] = '\r'; out[p++] = '\n'; }
@@ -81,7 +101,6 @@ static void Stage(sdk::GameContext* ctx, uint32_t n) {
 }
 
 // --- signatures (client.dll, x64; cs2-dumper lineage; guarded at runtime) ---
-struct Sig { const uint8_t* pat; const char* mask; size_t len; size_t ripLen; size_t ripOff; const char* what; };
 static const uint8_t kEntPat[] = {0x48,0x8B,0x0D,0,0,0,0, 0x48,0x89,0x7C,0x24,0, 0x8B,0xFA,0xC1,0xEB};
 static const char kEntMask[] = "xxx????xxxx?xxxx";
 static const uint8_t kLpPat[] = {0x48,0x8D,0x05,0,0,0,0, 0xC3,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC, 0x48,0x83,0xEC,0, 0x8B,0x0D};
@@ -90,42 +109,32 @@ static const uint8_t kVmPat[] = {0x48,0x8D,0x0D,0,0,0,0, 0x48,0xC1,0xE0,0x06};
 static const char kVmMask[] = "xxx????xxx";
 
 static bool ScanGlobal(sdk::GameContext* ctx, const uint8_t* pat, const char* mask, size_t len,
-                       const char* what, uintptr_t* out) {
+                       unsigned whatId, uintptr_t* out) {
   uintptr_t m = sdk::PatternScan(ctx->mod.clientBase, ctx->mod.clientSize, pat, mask, len);
   if (!m) {
     // Include module bounds: distinguishes wrong-base/size from true sig drift.
     char eb[sdk::kMaxErrLen];
     size_t i = 0;
-    const char* p = "sig stale: ";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    p = what;
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    p = " base=";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    char hx[20];
-    sdk::U64ToHex(hx, sizeof(hx), ctx->mod.clientBase);
-    for (size_t k = 0; hx[k] && i + 1 < sizeof(eb); ++k) eb[i++] = hx[k];
-    p = " size=";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    sdk::U64ToHex(hx, sizeof(hx), ctx->mod.clientSize);
-    for (size_t k = 0; hx[k] && i + 1 < sizeof(eb); ++k) eb[i++] = hx[k];
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_sigstale);
+    // whatId names the global (decrypted temp, never stored)
+    {
+      char wn[32];
+      vacsafe::str::CopyTo(whatId, wn, sizeof(wn));
+      AppStr(eb, sizeof(eb), &i, wn);
+    }
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_base);
+    AppHex(eb, sizeof(eb), &i, ctx->mod.clientBase, false);
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_size);
+    AppHex(eb, sizeof(eb), &i, ctx->mod.clientSize, false);
     // map forensics survive into the miss line (stage file overwrites per stage)
-    p = " mz=";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    sdk::U64ToHex(hx, sizeof(hx), ctx->priv[8]);
-    for (size_t k = 2; hx[k] && i + 1 < sizeof(eb); ++k) eb[i++] = hx[k];
-    p = " t=";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    sdk::U64ToHex(hx, sizeof(hx), ctx->priv[9]);
-    for (size_t k = 2; hx[k] && i + 1 < sizeof(eb); ++k) eb[i++] = hx[k];
-    p = " ninst=";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    sdk::U64ToHex(hx, sizeof(hx), ctx->priv[6]);
-    for (size_t k = 2; hx[k] && i + 1 < sizeof(eb); ++k) eb[i++] = hx[k];
-    p = " pm=";
-    while (*p && i + 1 < sizeof(eb)) eb[i++] = *p++;
-    sdk::U64ToHex(hx, sizeof(hx), ctx->priv[11]);
-    for (size_t k = 2; hx[k] && i + 1 < sizeof(eb); ++k) eb[i++] = hx[k];
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_mz);
+    AppHex(eb, sizeof(eb), &i, ctx->priv[8], true);
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_t);
+    AppHex(eb, sizeof(eb), &i, ctx->priv[9], true);
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_ninst);
+    AppHex(eb, sizeof(eb), &i, ctx->priv[6], true);
+    AppId(eb, sizeof(eb), &i, vacsafe::str::SID_d_pm);
+    AppHex(eb, sizeof(eb), &i, ctx->priv[11], true);
     eb[i] = 0;
     sdk::SetErr(ctx, eb);
     return false;
@@ -157,7 +166,7 @@ static void* CallScope(sdk::GameContext* ctx, void* sys, const char* mod) {
     FindScopeFn f = (FindScopeFn)VFunc(sys, 13);
     if (!f) return nullptr;
     if (!nt::AddressInModules((uintptr_t)f)) {
-      sdk::SetErr(ctx, "schema vtable[13] outside modules (stale index?)");
+      SetErrId(ctx, vacsafe::str::SID_e_vt13);
       return nullptr;
     }
     return f(sys, mod, nullptr); // out=nullptr: guarded writes skipped by callee
@@ -169,7 +178,7 @@ static void* CallClass(sdk::GameContext* ctx, void* scope, const char* cls) {
     FindClassFn f = (FindClassFn)VFunc(scope, 2);
     if (!f) return nullptr;
     if (!nt::AddressInModules((uintptr_t)f)) {
-      sdk::SetErr(ctx, "schema vtable[2] outside modules (stale index?)");
+      SetErrId(ctx, vacsafe::str::SID_e_vt2);
       return nullptr;
     }
     void* out = nullptr;
@@ -230,28 +239,37 @@ struct SchemaOut {
 };
 
 static bool ResolveSchema(sdk::GameContext* ctx, SchemaOut* so) {
-  if (!ctx->mod.schemaBase) { sdk::SetErr(ctx, "schemasystem.dll absent"); return false; }
+  if (!ctx->mod.schemaBase) { SetErrId(ctx, vacsafe::str::SID_e_noschema); return false; }
   Stage(ctx, 60);
   // Range-gate CreateInterface too: must live inside schemasystem.dll.
-  void* ci = nt::GetProcByName((void*)ctx->mod.schemaBase, VACSAFE_OBF("CreateInterface"));
-  if (!ci || !nt::AddressInModules((uintptr_t)ci)) { sdk::SetErr(ctx, "CreateInterface missing in schemasystem"); return false; }
+  STRBUF(nm_ci, SID_api_createinterface);
+  void* ci = nt::GetProcByName((void*)ctx->mod.schemaBase, nm_ci);
+  if (!ci || !nt::AddressInModules((uintptr_t)ci)) { SetErrId(ctx, vacsafe::str::SID_e_noci); return false; }
   typedef void* (*CiFn)(const char*, int*);
   void* sys = nullptr;
-  __try { sys = ((CiFn)ci)(VACSAFE_OBF("SchemaSystem_001"), nullptr); }
+  STRBUF(nm_ss, SID_api_schemasys);
+  __try { sys = ((CiFn)ci)(nm_ss, nullptr); }
   __except (EXCEPTION_EXECUTE_HANDLER) { sys = nullptr; }
-  if (!sys) { sdk::SetErr(ctx, "SchemaSystem_001 capture failed"); return false; }
+  if (!sys) { SetErrId(ctx, vacsafe::str::SID_e_nosys); return false; }
   Stage(ctx, 65);
-  void* scope = CallScope(ctx, sys, VACSAFE_OBF("client.dll"));
-  if (!scope) { if (!ctx->err[0]) sdk::SetErr(ctx, "schema scope client.dll missing (vtable stale?)"); Stage(ctx, 69); return false; }
+  STRBUF(nm_mod, SID_mod_client);
+  void* scope = CallScope(ctx, sys, nm_mod);
+  if (!scope) { if (!ctx->err[0]) SetErrId(ctx, vacsafe::str::SID_e_noscope); Stage(ctx, 69); return false; }
   Stage(ctx, 70);
-  void* pawn = CallClass(ctx, scope, VACSAFE_OBF("C_CSPlayerPawn"));
-  if (!pawn) { if (!ctx->err[0]) sdk::SetErr(ctx, "C_CSPlayerPawn missing in schema"); Stage(ctx, 79); return false; }
+  STRBUF(nm_pawn, SID_cls_pawn);
+  void* pawn = CallClass(ctx, scope, nm_pawn);
+  if (!pawn) { if (!ctx->err[0]) SetErrId(ctx, vacsafe::str::SID_e_nopawn); Stage(ctx, 79); return false; }
   Stage(ctx, 80);
-  so->offHealth = FindField(pawn, VACSAFE_OBF("m_iHealth"));
-  so->offTeam = FindField(pawn, VACSAFE_OBF("m_iTeamNum"));
-  so->offScene = FindField(pawn, VACSAFE_OBF("m_pGameSceneNode"));
-  void* node = CallClass(ctx, scope, VACSAFE_OBF("CGameSceneNode"));
-  if (node) so->offOrigin = FindField(node, VACSAFE_OBF("m_vecOrigin"));
+  STRBUF(nm_hp, SID_fld_health);
+  STRBUF(nm_team, SID_fld_team);
+  STRBUF(nm_sn, SID_fld_scene);
+  so->offHealth = FindField(pawn, nm_hp);
+  so->offTeam = FindField(pawn, nm_team);
+  so->offScene = FindField(pawn, nm_sn);
+  STRBUF(nm_node, SID_cls_node);
+  void* node = CallClass(ctx, scope, nm_node);
+  STRBUF(nm_org, SID_fld_origin);
+  if (node) so->offOrigin = FindField(node, nm_org);
   so->ok = (so->offHealth >= 0 && so->offTeam >= 0);
   Stage(ctx, 90);
   return true;
@@ -318,26 +336,24 @@ static void MapSanity(sdk::GameContext* ctx) {
     ctx->priv[10] = thi;
     char eb[96]{};
     size_t p = 0;
-    const char* pre = "map mz=";
-    while (*pre && p + 1 < sizeof(eb)) eb[p++] = *pre++;
+    AppId(eb, sizeof(eb), &p, vacsafe::str::SID_d_map);
     if (okMz) {
       const char* dig = "0123456789ABCDEF";
       eb[p++] = dig[(mz[0] >> 4) & 0xF]; eb[p++] = dig[mz[0] & 0xF];
       eb[p++] = dig[(mz[1] >> 4) & 0xF]; eb[p++] = dig[mz[1] & 0xF];
     } else { eb[p++] = '?'; eb[p++] = '?'; }
-    const char* mid = " t=";
-    while (*mid && p + 1 < sizeof(eb)) eb[p++] = *mid++;
+    AppId(eb, sizeof(eb), &p, vacsafe::str::SID_d_t);
     if (okT) {
       const char* dig = "0123456789ABCDEF";
       for (int i = 0; i < 8 && p + 2 < sizeof(eb); ++i) {
         eb[p++] = dig[(t0[i] >> 4) & 0xF]; eb[p++] = dig[t0[i] & 0xF];
       }
     } else {
-      const char* q = "UNREADABLE";
-      while (*q && p + 1 < sizeof(eb)) eb[p++] = *q++;
+      char un[16];
+      vacsafe::str::CopyTo(vacsafe::str::SID_d_unreadable, un, sizeof(un));
+      AppStr(eb, sizeof(eb), &p, un);
     }
-    const char* cc = " ninst=";
-    while (*cc && p + 1 < sizeof(eb)) eb[p++] = *cc++;
+    AppId(eb, sizeof(eb), &p, vacsafe::str::SID_d_ninst);
     eb[p++] = (char)('0' + (count > 9 ? 9 : count));
     // DIAG (temporary): compare 16B at file-verified RVA 0x9AA44A against the
     // expected file bytes. Verdict in priv[11]: 0xFF match, 0xFE fault, else
@@ -366,11 +382,11 @@ static bool Cs2Init(sdk::GameContext* ctx) {
   if (!sdk::FillModules(ctx)) { Stage(ctx, 19); return false; }
   MapSanity(ctx); // sets err with map/mz/text/instances; ScanGlobal overwrites on miss
   StageDetail(ctx, 20, ctx->mod.clientBase, ctx->mod.clientSize);
-  if (!ScanGlobal(ctx, kEntPat, kEntMask, sizeof(kEntPat), "dwEntityList", &ctx->entityList)) { Stage(ctx, 29); return false; }
+  if (!ScanGlobal(ctx, kEntPat, kEntMask, sizeof(kEntPat), vacsafe::str::SID_w_ent, &ctx->entityList)) { Stage(ctx, 29); return false; }
   Stage(ctx, 30);
-  if (!ScanGlobal(ctx, kLpPat, kLpMask, sizeof(kLpPat), "dwLocalPlayerPawn", &ctx->localPlayer)) { Stage(ctx, 39); return false; }
+  if (!ScanGlobal(ctx, kLpPat, kLpMask, sizeof(kLpPat), vacsafe::str::SID_w_lp, &ctx->localPlayer)) { Stage(ctx, 39); return false; }
   Stage(ctx, 40);
-  if (!ScanGlobal(ctx, kVmPat, kVmMask, sizeof(kVmPat), "dwViewMatrix", &ctx->viewMatrix)) { Stage(ctx, 49); return false; }
+  if (!ScanGlobal(ctx, kVmPat, kVmMask, sizeof(kVmPat), vacsafe::str::SID_w_vm, &ctx->viewMatrix)) { Stage(ctx, 49); return false; }
   Stage(ctx, 50);
   SchemaOut so{};
   if (ResolveSchema(ctx, &so)) {

@@ -1,10 +1,18 @@
 #include "game_adapter.h"
 #include "nt_api.h"
 #include "peb.h"
+#include "strings.inc"
 
 // SDK core: module fill, pattern scan, RIP resolve, W2S math, tiny utils.
 // CRT-free TU (raw-DllMain safe): no printf/malloc/new, manual loops only.
 namespace vacsafe::sdk {
+
+void* SdkResolveVQ() {
+  // djb2("VirtualQuery") = 0x395269C2. kernel32 universal (zero signal).
+  wchar_t k32[16];
+  vacsafe::str::CopyToW(vacsafe::str::SID_mod_kernel32, k32, 16);
+  return nt::GetProcByHash(k32, 0x395269C2);
+}
 
 size_t StrLen(const char* s, size_t cap) {
   size_t n = 0;
@@ -72,35 +80,50 @@ static size_t ModuleSize(void* base) {
 
 bool FillModules(GameContext* ctx) {
   if (!ctx) return false;
-  // Wide literals for universal modules: every process links these (zero signal).
-  void* client = nt::GetModuleBase(L"client.dll");
-  void* engine2 = nt::GetModuleBase(L"engine2.dll");
-  void* engine = engine2 ? engine2 : nt::GetModuleBase(L"engine.dll");
-  void* schema = nt::GetModuleBase(L"schemasystem.dll");
-  if (!client) { SetErr(ctx, "client.dll not loaded (wrong game?)"); return false; }
+  wchar_t wClient[16], wE2[16], wEng[16], wSch[20];
+  vacsafe::str::CopyToW(vacsafe::str::SID_mod_client, wClient, 16);
+  vacsafe::str::CopyToW(vacsafe::str::SID_mod_engine2, wE2, 16);
+  vacsafe::str::CopyToW(vacsafe::str::SID_mod_engine, wEng, 16);
+  vacsafe::str::CopyToW(vacsafe::str::SID_mod_schema, wSch, 20);
+  void* client = nt::GetModuleBase(wClient);
+  void* engine2 = nt::GetModuleBase(wE2);
+  void* engine = engine2 ? engine2 : nt::GetModuleBase(wEng);
+  void* schema = nt::GetModuleBase(wSch);
+  if (!client) {
+    char eb[64];
+    vacsafe::str::CopyTo(vacsafe::str::SID_e_noclient, eb, sizeof(eb));
+    SetErr(ctx, eb);
+    return false;
+  }
   ctx->mod.clientBase = (uintptr_t)client;
   ctx->mod.clientSize = ModuleSize(client);
   if (engine) { ctx->mod.engineBase = (uintptr_t)engine; ctx->mod.engineSize = ModuleSize(engine); }
   if (schema) { ctx->mod.schemaBase = (uintptr_t)schema; ctx->mod.schemaSize = ModuleSize(schema); }
-  if (!ctx->mod.clientSize) { SetErr(ctx, "client.dll headers unreadable"); return false; }
+  if (!ctx->mod.clientSize) {
+    char eb[64];
+    vacsafe::str::CopyTo(vacsafe::str::SID_e_badclient, eb, sizeof(eb));
+    SetErr(ctx, eb);
+    return false;
+  }
   return true;
 }
 
 uintptr_t PatternScan(uintptr_t base, size_t size, const uint8_t* pat, const char* mask, size_t len) {
   if (!base || !size || !pat || !mask || !len || len > 64) return 0;
-  // Page-resilient: a single __try around the whole range aborts on the first
-  // unreadable page (discarded .reloc, guard pages) and reports false negatives.
-  // Walk page by page (4K), skipping faulting pages, overlapping by len.
+  // Page-walk with pre-validation: faulting pages are skipped WITHOUT raising,
+  // so anti-debug exception monitors never see us (cf. 2026-09-21 fastfail).
+  // NOTE: wildcard is '?' (0x3F, NONZERO). Never test mask[j] for truthiness.
   const size_t kPage = 0x1000;
   for (size_t page = 0; page < size; page += kPage) {
     size_t chunkEnd = page + kPage + len;
     if (chunkEnd > size) chunkEnd = size;
+    if (!CanRead(base + page, chunkEnd - page)) continue;
     __try {
       for (size_t i = page; i + len <= chunkEnd; ++i) {
         const volatile uint8_t* p = (const volatile uint8_t*)(base + i);
         size_t j = 0;
         for (; j < len; ++j) {
-          if (mask[j] && p[j] != pat[j]) break;
+          if (mask[j] != '?' && p[j] != pat[j]) break;
         }
         if (j == len) return base + i;
       }

@@ -56,19 +56,46 @@ struct IGameAdapter {
   bool (*WorldToScreen)(GameContext* ctx, const Vec3& w, Vec3& s);
 };
 
-// --- memory (header-inline, SEH-guarded; no ReadProcessMemory: internal deref) ---
+// --- memory (SEH-guarded + VirtualQuery-gated: NEVER fault in target) ---
+// Rationale (2026-09-21): hundreds of caught AVs in a tight loop trip CS2's
+// exception monitor (fastfail). Every read first validates the page via
+// VirtualQuery (hashed, cached); __try remains as belt-and-braces only.
+typedef SIZE_T (WINAPI* VirtualQueryFn)(LPCVOID, PMEMORY_BASIC_INFORMATION, SIZE_T);
+void* SdkResolveVQ(); // sdk.cpp: hashed VirtualQuery address (CRT-free)
+inline bool CanRead(uintptr_t addr, size_t n) {
+  static void* cachedVQ = nullptr;
+  if (!cachedVQ) {
+    cachedVQ = SdkResolveVQ();
+    if (!cachedVQ) return false;
+  }
+  // All bytes must lie in committed, readable, non-guard pages.
+  uintptr_t first = addr & ~(uintptr_t)0xFFF;
+  uintptr_t last = (addr + n - 1) & ~(uintptr_t)0xFFF;
+  for (uintptr_t pg = first;; pg += 0x1000) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!((VirtualQueryFn)cachedVQ)((LPCVOID)pg, &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+    if (mbi.Protect & PAGE_GUARD) return false;
+    if (!(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                          PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+      return false;
+    if (pg == last) break;
+  }
+  return true;
+}
+
 template <typename T>
 inline T Read(uintptr_t addr) {
+  T z{};
+  if (!addr || !CanRead(addr, sizeof(T))) return z;
   __try {
     return *(volatile T*)addr;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    T z{};
-    return z;
-  }
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return z; }
 }
 
 template <typename T>
 inline bool Write(uintptr_t addr, const T& v) {
+  if (!addr || !CanRead(addr, sizeof(T))) return false;
   __try {
     *(volatile T*)addr = v;
     return true;
@@ -76,6 +103,7 @@ inline bool Write(uintptr_t addr, const T& v) {
 }
 
 inline bool ReadBuf(uintptr_t addr, void* out, size_t n) {
+  if (!addr || !out || !n || !CanRead(addr, n)) return false;
   __try {
     const volatile uint8_t* s = (const volatile uint8_t*)addr;
     uint8_t* d = (uint8_t*)out;
@@ -86,7 +114,7 @@ inline bool ReadBuf(uintptr_t addr, void* out, size_t n) {
 
 // --- sdk.cpp: module fill, pattern scan, RIP resolve, W2S, tiny utils ---
 bool FillModules(GameContext* ctx); // client/engine/schemasystem via nt::GetModuleBase
-// Pattern with explicit length; mask[i]!=0 means wildcard. Returns absolute match or 0.
+// Pattern with explicit length; mask[i]=='?' means wildcard. Returns absolute match or 0.
 uintptr_t PatternScan(uintptr_t base, size_t size, const uint8_t* pat, const char* mask, size_t len);
 // Resolve RIP-relative DWORD at [match+dispOff], insn length instrLen.
 uintptr_t ResolveRip(uintptr_t match, size_t instrLen, size_t dispOff);
