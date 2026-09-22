@@ -133,19 +133,54 @@ int main(int argc, char** argv) {
   }
 
   if (payload.empty()) {
-    // Search next to exe, then default build output.
-    static const char* cands[] = {
-      "payload.dll", "..\\payload\\payload.dll",
-      "build\\x64\\src\\payload\\payload.dll", ".\\build\\x64\\src\\payload\\payload.dll",
-    };
-    for (auto c : cands) {
-      if (GetFileAttributesA(c) != INVALID_FILE_ATTRIBUTES) { payload = c; break; }
+    // Prefer encrypted (.enc, newest first), fall back to plain DLL.
+    // Double-click (CWD = exe dir) resolves to the staged/post-build outputs.
+    static const char* encDirs[] = { ".\\", "..\\..\\" };
+    std::string bestEnc;
+    FILETIME bestTime{};
+    for (auto d : encDirs) {
+      std::string pat = std::string(d) + "payload-*.enc";
+      WIN32_FIND_DATAA fd{};
+      HANDLE h = FindFirstFileA(pat.c_str(), &fd);
+      if (h == INVALID_HANDLE_VALUE) continue;
+      do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+          std::string full = std::string(d) + fd.cFileName;
+          if (CompareFileTime(&fd.ftLastWriteTime, &bestTime) > 0) {
+            bestTime = fd.ftLastWriteTime;
+            bestEnc = full;
+          }
+        }
+      } while (FindNextFileA(h, &fd));
+      FindClose(h);
+    }
+    // Legacy dev name also honored (repacked by hand).
+    for (auto c : { ".\\payload-test.enc", "..\\..\\payload-test.enc" }) {
+      if (GetFileAttributesA(c) == INVALID_FILE_ATTRIBUTES) continue;
+      WIN32_FILE_ATTRIBUTE_DATA fa{};
+      if (GetFileAttributesExA(c, GetFileExInfoStandard, &fa) &&
+          CompareFileTime(&fa.ftLastWriteTime, &bestTime) > 0) {
+        bestTime = fa.ftLastWriteTime;
+        bestEnc = c;
+      }
+    }
+    if (!bestEnc.empty()) {
+      payload = bestEnc;
+    } else {
+      static const char* cands[] = {
+        "payload.dll", "..\\payload\\payload.dll",
+        "build\\x64\\src\\payload\\payload.dll", ".\\build\\x64\\src\\payload\\payload.dll",
+      };
+      for (auto c : cands) {
+        if (GetFileAttributesA(c) != INVALID_FILE_ATTRIBUTES) { payload = c; break; }
+      }
     }
     if (payload.empty()) {
-      printf("[fail] --payload required (tried payload.dll, ..\\payload\\payload.dll, build\\x64\\src\\payload\\payload.dll).\n");
+      printf("[fail] --payload required (no payload-*.enc and no payload.dll found).\n");
       MaybePause(pauseAtEnd);
       return 1;
     }
+    printf("[*] payload: %s\n", payload.c_str());
   }
 
   // Offsets handoff: offsets/cs2.json -> %TEMP%\VacSafe-offsets.ini (payload prefers it).
@@ -154,6 +189,7 @@ int main(int argc, char** argv) {
     const char* jcands[] = {
       "src\\payload\\offsets\\cs2.json", "..\\..\\src\\payload\\offsets\\cs2.json",
       "build\\..\\src\\payload\\offsets\\cs2.json", ".\\src\\payload\\offsets\\cs2.json",
+      "..\\..\\..\\..\\src\\payload\\offsets\\cs2.json", // loader-dir deep builds
     };
     std::string jpath;
     for (auto c : jcands) {
