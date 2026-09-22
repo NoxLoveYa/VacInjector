@@ -58,24 +58,25 @@ struct Gdi {
   // SetTextColor=0x41936715 TextOutA=0x805294C3 MoveToEx=0x0694FFDC LineTo=0xC0D12C10
   // IsWindowVisible=0xE35AC807 GetSystemMetrics=0xA988C1A1 GetWindowRect=0xF68C840B (all user32.dll)
   bool Resolve() {
-    wchar_t u32[16];
+    wchar_t u32[16], g32[16];
     vacsafe::str::CopyToW(vacsafe::str::SID_mod_user32, u32, 16);
+    vacsafe::str::CopyToW(vacsafe::str::SID_mod_gdi32, g32, 16);
     void* f[15];
-    f[0] = nt::GetProcByHash(u32, 0x94CFDCC5);
-    f[1] = nt::GetProcByHash(u32, 0xA58EDBE1);
-    f[2] = nt::GetProcByHash(u32, 0x0D3D24AC);
-    f[3] = nt::GetProcByHash(u32, 0xE43871CD);
-    f[4] = nt::GetProcByHash(u32, 0x5267005A);
-    f[5] = nt::GetProcByHash(u32, 0xED6925BC);
-    f[6] = nt::GetProcByHash(u32, 0x7CF4FD7C);
-    f[7] = nt::GetProcByHash(u32, 0xCC68186F);
-    f[8] = nt::GetProcByHash(u32, 0xD7460980);
-    f[9] = nt::GetProcByHash(u32, 0x6F828843);
-    f[10] = nt::GetProcByHash(u32, 0x41936715);
-    f[11] = nt::GetProcByHash(u32, 0x805294C3);
-    f[12] = nt::GetProcByHash(u32, 0x0694FFDC);
-    f[13] = nt::GetProcByHash(u32, 0xC0D12C10);
-    f[14] = nt::GetProcByHash(u32, 0xE35AC807);
+    f[0] = nt::GetProcByHash(u32, 0x94CFDCC5);   // EnumWindows (user32)
+    f[1] = nt::GetProcByHash(u32, 0xA58EDBE1);   // GetWindowThreadProcessId
+    f[2] = nt::GetProcByHash(u32, 0x0D3D24AC);   // GetDC
+    f[3] = nt::GetProcByHash(u32, 0xE43871CD);   // ReleaseDC
+    f[4] = nt::GetProcByHash(g32, 0x5267005A);   // Rectangle (gdi32)
+    f[5] = nt::GetProcByHash(g32, 0xED6925BC);   // CreatePen
+    f[6] = nt::GetProcByHash(g32, 0x7CF4FD7C);   // SelectObject
+    f[7] = nt::GetProcByHash(g32, 0xCC68186F);   // DeleteObject
+    f[8] = nt::GetProcByHash(g32, 0xD7460980);   // GetStockObject
+    f[9] = nt::GetProcByHash(g32, 0x6F828843);   // SetBkMode
+    f[10] = nt::GetProcByHash(g32, 0x41936715);  // SetTextColor
+    f[11] = nt::GetProcByHash(g32, 0x805294C3);  // TextOutA
+    f[12] = nt::GetProcByHash(g32, 0x0694FFDC);  // MoveToEx
+    f[13] = nt::GetProcByHash(g32, 0xC0D12C10);  // LineTo
+    f[14] = nt::GetProcByHash(u32, 0xE35AC807);  // IsWindowVisible (user32)
     resBits = 0;
     for (int i = 0; i < 15; ++i) if (f[i]) resBits |= (1u << i);
     if (resBits != 0x7FFF) return false;

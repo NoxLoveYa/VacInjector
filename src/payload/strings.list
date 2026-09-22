@@ -19,6 +19,7 @@ mod_schema = schemasystem.dll
 mod_kernel32 = kernel32.dll
 mod_ntdll = ntdll.dll
 mod_user32 = user32.dll
+mod_gdi32 = gdi32.dll
 cls_pawn = C_CSPlayerPawn
 cls_node = CGameSceneNode
 fld_health = m_iHealth
