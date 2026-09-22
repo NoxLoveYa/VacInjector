@@ -125,6 +125,68 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Offsets handoff: offsets/cs2.json -> %TEMP%\VacSafe-offsets.ini (payload prefers it).
+  // Minimal parse: "dwEntityList": <dec>, no JSON lib. Missing file = scan path.
+  {
+    const char* jcands[] = {
+      "src\\payload\\offsets\\cs2.json", "..\\..\\src\\payload\\offsets\\cs2.json",
+      "build\\..\\src\\payload\\offsets\\cs2.json", ".\\src\\payload\\offsets\\cs2.json",
+    };
+    std::string jpath;
+    for (auto c : jcands) {
+      if (GetFileAttributesA(c) != INVALID_FILE_ATTRIBUTES) { jpath = c; break; }
+    }
+    // Also try next to the loader exe (repo-root runs).
+    char exeDir[MAX_PATH] = {0};
+    if (jpath.empty() && GetModuleFileNameA(nullptr, exeDir, sizeof(exeDir))) {
+      std::string d = exeDir;
+      auto p = d.find_last_of("\\/");
+      if (p != std::string::npos) {
+        std::string t = d.substr(0, p + 1) + "..\\..\\src\\payload\\offsets\\cs2.json";
+        if (GetFileAttributesA(t.c_str()) != INVALID_FILE_ATTRIBUTES) jpath = t;
+      }
+    }
+    if (!jpath.empty()) {
+      FILE* jf = nullptr;
+      if (fopen_s(&jf, jpath.c_str(), "r") == 0 && jf) {
+        fseek(jf, 0, SEEK_END);
+        long jsz = ftell(jf);
+        fseek(jf, 0, SEEK_SET);
+        std::string js;
+        if (jsz > 0 && jsz < 8192) { js.resize((size_t)jsz); fread(js.data(), 1, (size_t)jsz, jf); }
+        fclose(jf);
+        auto grab = [&](const char* key) -> uint32_t {
+          auto at = js.find(key);
+          if (at == std::string::npos) return 0;
+          at = js.find(':', at);
+          if (at == std::string::npos) return 0;
+          return (uint32_t)strtoul(js.c_str() + at + 1, nullptr, 10);
+        };
+        uint32_t e = grab("\"dwEntityList\"");
+        uint32_t l = grab("\"dwLocalPlayerPawn\"");
+        uint32_t v = grab("\"dwViewMatrix\"");
+        if (e || l || v) {
+          char tmp[MAX_PATH] = {0};
+          if (GetTempPathA(sizeof(tmp), tmp)) {
+            std::string ini = std::string(tmp) + "VacSafe-offsets.ini";
+            FILE* of = nullptr;
+            if (fopen_s(&of, ini.c_str(), "w") == 0 && of) {
+              if (e) fprintf(of, "entityList=%X\n", e);
+              if (l) fprintf(of, "localPlayer=%X\n", l);
+              if (v) fprintf(of, "viewMatrix=%X\n", v);
+              fclose(of);
+              if (verbose) printf("[*] offsets ini: e=%X l=%X v=%X -> %s\n", e, l, v, ini.c_str());
+            }
+          }
+        } else if (verbose) {
+          printf("[*] offsets json has no usable values, scan path\n");
+        }
+      }
+    } else if (verbose) {
+      printf("[*] no offsets/cs2.json found, scan path\n");
+    }
+  }
+
   vacsafe::InjectorConfig cfg;
   cfg.pid = pid;
   // Decode UTF-8/ANSI path to wide for CreateFileW.

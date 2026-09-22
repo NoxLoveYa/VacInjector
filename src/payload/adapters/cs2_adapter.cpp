@@ -25,6 +25,10 @@
 namespace vacsafe {
 namespace {
 
+// Screen size cache (POD statics: zero-init, assigned in Init; raw-safe).
+static int sScrW = 0;
+static int sScrH = 0;
+
 static const vacsafe::Api* CtxApi(sdk::GameContext* ctx) {
   if (!ctx) return nullptr;
   return (const vacsafe::Api*)(uintptr_t)ctx->priv[7];
@@ -100,9 +104,10 @@ static void Stage(sdk::GameContext* ctx, uint32_t n) {
   StageDetail(ctx, n, 0, 0);
 }
 
-// --- signatures (client.dll, x64; cs2-dumper lineage; guarded at runtime) ---
-static const uint8_t kEntPat[] = {0x48,0x8B,0x0D,0,0,0,0, 0x48,0x89,0x7C,0x24,0, 0x8B,0xFA,0xC1,0xEB};
-static const char kEntMask[] = "xxx????xxxx?xxxx";
+// --- signatures (a2x/cs2-dumper lineage, maintained; guarded at runtime) ---
+// dwEntityList: store-form anchor (old load-form still matches dead code post-update).
+static const uint8_t kEntPat[] = {0x48,0x89,0x0D,0,0,0,0, 0xE9,0,0,0,0, 0xCC};
+static const char kEntMask[] = "xxx????x????x";
 static const uint8_t kLpPat[] = {0x48,0x8D,0x05,0,0,0,0, 0xC3,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC, 0x48,0x83,0xEC,0, 0x8B,0x0D};
 static const char kLpMask[] = "xxx????xxxxxxxxxxxx?xx";
 static const uint8_t kVmPat[] = {0x48,0x8D,0x0D,0,0,0,0, 0x48,0xC1,0xE0,0x06};
@@ -290,7 +295,69 @@ static int CountEntities(sdk::GameContext* ctx) {
   } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-static const char* Cs2Name() { return "cs2/source2"; }
+static const char* Cs2Name() {
+  static char buf[16] = {0};
+  if (!buf[0]) vacsafe::str::CopyTo(vacsafe::str::SID_n_cs2, buf, sizeof(buf));
+  return buf;
+}
+
+// Offsets file override (%TEMP%\VacSafe-offsets.ini, written by the loader from
+// offsets/cs2.json): lines "name=RVAhex". Nonzero entries win over pattern scans,
+// so game updates need a JSON edit, not a rebuild. CRT-free manual parse.
+static uint32_t ParseHex(const char* s, size_t n) {
+  uint32_t v = 0;
+  for (size_t i = 0; i < n; ++i) {
+    char c = s[i];
+    uint32_t d = 0;
+    if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
+    else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+    else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
+    else break;
+    v = (v << 4) | d;
+  }
+  return v;
+}
+
+static void LoadOffsetsIni(sdk::GameContext* ctx) {
+  __try {
+    const vacsafe::Api* api = CtxApi(ctx);
+    if (!api || !api->createFile || !api->readFile || !api->getFileSize) return;
+    char rel[32];
+    vacsafe::str::CopyTo(vacsafe::str::SID_offsets_rel, rel, sizeof(rel));
+    char tmp[MAX_PATH] = {0};
+    DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
+    if (!tn || tn >= sizeof(tmp) - 32) return;
+    char* dst = tmp + tn;
+    for (size_t i = 0; rel[i]; ++i) *dst++ = rel[i];
+    *dst = 0;
+    HANDLE f = api->createFile(tmp, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD hi = 0;
+    DWORD sz = api->getFileSize(f, &hi);
+    if (!sz || hi || sz > 512) { api->close(f); return; }
+    char buf[512]{};
+    DWORD rd = 0;
+    if (!api->readFile(f, buf, sz, &rd, nullptr) || rd != sz) { api->close(f); return; }
+    api->close(f);
+    size_t i = 0;
+    while (i < rd) {
+      size_t ls = i;
+      while (ls < rd && buf[ls] != '\n' && buf[ls] != '\r') ++ls;
+      size_t eq = i;
+      while (eq < ls && buf[eq] != '=') ++eq;
+      if (eq < ls && ctx->mod.clientBase) {
+        uint32_t v = ParseHex(buf + eq + 1, ls - eq - 1);
+        if (v) {
+          if (buf[i] == 'e') ctx->entityList = ctx->mod.clientBase + v;
+          else if (buf[i] == 'l') ctx->localPlayer = ctx->mod.clientBase + v;
+          else if (buf[i] == 'v') ctx->viewMatrix = ctx->mod.clientBase + v;
+        }
+      }
+      i = ls + 1;
+      while (i < rd && (buf[i] == '\n' || buf[i] == '\r')) ++i;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
 
 // Mapping sanity: MZ at base? first .text qword? how many client.dll instances?
 // Distinguishes wrong-base vs runtime-patched-content vs scanner bug.
@@ -382,11 +449,18 @@ static bool Cs2Init(sdk::GameContext* ctx) {
   if (!sdk::FillModules(ctx)) { Stage(ctx, 19); return false; }
   MapSanity(ctx); // sets err with map/mz/text/instances; ScanGlobal overwrites on miss
   StageDetail(ctx, 20, ctx->mod.clientBase, ctx->mod.clientSize);
-  if (!ScanGlobal(ctx, kEntPat, kEntMask, sizeof(kEntPat), vacsafe::str::SID_w_ent, &ctx->entityList)) { Stage(ctx, 29); return false; }
+  LoadOffsetsIni(ctx); // ini RVAs win; missing entries fall through to scans
+  if (!ctx->entityList) {
+    if (!ScanGlobal(ctx, kEntPat, kEntMask, sizeof(kEntPat), vacsafe::str::SID_w_ent, &ctx->entityList)) { Stage(ctx, 29); return false; }
+  }
   Stage(ctx, 30);
-  if (!ScanGlobal(ctx, kLpPat, kLpMask, sizeof(kLpPat), vacsafe::str::SID_w_lp, &ctx->localPlayer)) { Stage(ctx, 39); return false; }
+  if (!ctx->localPlayer) {
+    if (!ScanGlobal(ctx, kLpPat, kLpMask, sizeof(kLpPat), vacsafe::str::SID_w_lp, &ctx->localPlayer)) { Stage(ctx, 39); return false; }
+  }
   Stage(ctx, 40);
-  if (!ScanGlobal(ctx, kVmPat, kVmMask, sizeof(kVmPat), vacsafe::str::SID_w_vm, &ctx->viewMatrix)) { Stage(ctx, 49); return false; }
+  if (!ctx->viewMatrix) {
+    if (!ScanGlobal(ctx, kVmPat, kVmMask, sizeof(kVmPat), vacsafe::str::SID_w_vm, &ctx->viewMatrix)) { Stage(ctx, 49); return false; }
+  }
   Stage(ctx, 50);
   SchemaOut so{};
   if (ResolveSchema(ctx, &so)) {
@@ -398,6 +472,15 @@ static bool Cs2Init(sdk::GameContext* ctx) {
   } else {
     ctx->priv[4] = 0; // schema failed: err already set; globals still valid
     Stage(ctx, 95);
+  }
+  // Screen size for W2S (SM_CXSCREEN=0/SM_CYSCREEN=1 numeric; hashed API).
+  {
+    const vacsafe::Api* api = CtxApi(ctx);
+    if (api && api->getSystemMetrics) {
+      int w = api->getSystemMetrics(0);
+      int h = api->getSystemMetrics(1);
+      if (w > 320 && h > 200 && w < 16384 && h < 16384) { sScrW = w; sScrH = h; }
+    }
   }
   Stage(ctx, 100);
   return true;
@@ -441,12 +524,84 @@ static int Cs2Players(sdk::GameContext* ctx, sdk::Player* out, int max) {
 }
 
 static bool Cs2W2S(sdk::GameContext* ctx, const sdk::Vec3& w, sdk::Vec3& s) {
-  (void)ctx; (void)w; (void)s;
-  return false; // renderer lands next iteration (ESP); count+fields prove the loop now
+  if (!ctx || !ctx->viewMatrix || !sScrW || !sScrH) return false;
+  __try {
+    float m[16];
+    if (!sdk::ReadBuf(ctx->viewMatrix, m, sizeof(m))) return false;
+    float x = m[0] * w.x + m[1] * w.y + m[2] * w.z + m[3];
+    float y = m[4] * w.x + m[5] * w.y + m[6] * w.z + m[7];
+    float ww = m[12] * w.x + m[13] * w.y + m[14] * w.z + m[15];
+    if (ww < 0.01f) return false;
+    float inv = 1.0f / ww;
+    s.x = (float)sScrW * 0.5f * (1.0f + x * inv);
+    s.y = (float)sScrH * 0.5f * (1.0f - y * inv);
+    s.z = 0.0f;
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
 } // namespace
 
 extern const sdk::IGameAdapter kCs2Adapter = { Cs2Name, Cs2Init, Cs2Players, Cs2W2S };
+
+// ESP snapshot loop (Phase 05b-i, no hooks): every 500ms project all players,
+// rewrite VacSafe-esp.txt with the latest snapshot (120 ticks = 60s, then exit).
+// Validates the full read->W2S->screen path; pixels come with the Present hook.
+void EspLog(sdk::GameContext* ctx, const Api* api) {
+  if (!ctx || !api || !api->sleepMs) return;
+  for (int tick = 0; tick < 120; ++tick) {
+    api->sleepMs(500);
+    __try {
+      sdk::Player ps[16]{};
+      int n = kCs2Adapter.GetPlayers(ctx, ps, 16);
+      char out[2048]{};
+      size_t p = 0;
+      // "tick=N n=M\r\n" then "i x y hp team\r\n" per player (ints only, no CRT).
+      const char* tpre = "tick=";
+      while (*tpre && p + 1 < sizeof(out)) out[p++] = *tpre++;
+      char nb[12]; int nn = 0; int tv = tick;
+      if (!tv) nb[nn++] = '0';
+      while (tv > 0 && nn < 11) { nb[nn++] = (char)('0' + tv % 10); tv /= 10; }
+      while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
+      const char* nm = " n=";
+      while (*nm && p + 1 < sizeof(out)) out[p++] = *nm++;
+      nn = 0; tv = n < 0 ? 0 : n;
+      if (!tv) nb[nn++] = '0';
+      while (tv > 0 && nn < 11) { nb[nn++] = (char)('0' + tv % 10); tv /= 10; }
+      while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
+      if (p + 2 < sizeof(out)) { out[p++] = '\r'; out[p++] = '\n'; }
+      for (int i = 0; i < n && i < 16 && p + 64 < sizeof(out); ++i) {
+        sdk::Vec3 s{};
+        bool vis = kCs2Adapter.WorldToScreen(ctx, ps[i].pos, s);
+        if (!vis) continue;
+        int vals[5] = { i, (int)s.x, (int)s.y, ps[i].health, ps[i].team };
+        for (int k = 0; k < 5; ++k) {
+          if (k) { if (p + 1 < sizeof(out)) out[p++] = ' '; }
+          int vv = vals[k];
+          if (vv < 0) { if (p + 1 < sizeof(out)) out[p++] = '-'; vv = -vv; }
+          nn = 0;
+          if (!vv) nb[nn++] = '0';
+          while (vv > 0 && nn < 11) { nb[nn++] = (char)('0' + vv % 10); vv /= 10; }
+          while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
+        }
+        if (p + 2 < sizeof(out)) { out[p++] = '\r'; out[p++] = '\n'; }
+      }
+      out[p] = 0;
+      char rel[32];
+      vacsafe::str::CopyTo(vacsafe::str::SID_esp_rel, rel, sizeof(rel));
+      char tmp[MAX_PATH] = {0};
+      DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
+      if (!tn || tn >= sizeof(tmp) - 32) continue;
+      char* dst = tmp + tn;
+      for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
+      *dst = 0;
+      HANDLE f = api->createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (f == INVALID_HANDLE_VALUE) continue;
+      DWORD w = 0;
+      api->writeFile(f, out, (DWORD)p, &w, nullptr);
+      api->close(f);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
+  }
+}
 
 } // namespace vacsafe

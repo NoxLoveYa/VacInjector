@@ -14,6 +14,7 @@ struct GameContext;
 struct Api;
 const sdk::IGameAdapter* CreateAdapterForExe(const char* exeName);
 bool Cs2Proof(sdk::GameContext* ctx, const Api* api);
+void EspLog(sdk::GameContext* ctx, const Api* api);
 } // namespace vacsafe
 
 namespace vacsafe {
@@ -85,6 +86,8 @@ static DWORD WINAPI InitThread(LPVOID param) {
   InitMark(ok ? "205-init-ok" : "205-init-fail");
   vacsafe::Cs2Proof(&ctx, &g_api);
   InitMark("206-proof-done");
+  vacsafe::EspLog(&ctx, &g_api); // 60s ESP snapshot loop, then thread exits
+  InitMark("207-esp-done");
   return 0;
 }
 

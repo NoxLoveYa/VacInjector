@@ -1,12 +1,13 @@
 {
-  "_note": "Last-known-good CS2 globals. Preferred path is runtime PATTERN SCAN (adapter). Fill these ONLY when sigs go stale: payload prefers nonzero values here over scanning. Verify against your build with a dumper (a2x/cs2-dumper) after each CS2 update. NEVER hardcode into .cpp.",
+  "_note": "CS2 globals for VacSafe loader->payload handoff. Values are RVAs from client.dll base. Source: a2x/cs2-dumper output at matching game build. Loader parses this file and writes %TEMP%\\VacSafe-offsets.ini; payload prefers ini values over pattern scans. Refresh after every CS2 update (dumper or Binja).",
   "game": "cs2",
   "exe": "cs2.exe",
   "arch": "x64",
-  "buildDate": "unknown - fill after first -insecure validation",
-  "dwEntityList": 0,
-  "dwLocalPlayerPawn": 0,
-  "dwViewMatrix": 0,
+  "buildDate": "2026-09-10",
+  "dumperCommit": "e329355dd4629451db85a7dbd1af54ea8a706948",
+  "dwEntityList": 39287776,
+  "dwLocalPlayerPawn": 37538824,
+  "dwViewMatrix": 37560816,
   "schema": {
     "FindTypeScopeForModule_index": 13,
     "FindDeclaredClass_index": 2,
