@@ -137,15 +137,46 @@ static void DrawStatic(void* hdc, int cx, int cy) {
   g_gdi.delObj(pen);
 }
 
-static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn) {  __try {
-    char rel[32];
-    vacsafe::str::CopyTo(vacsafe::str::SID_render_rel, rel, sizeof(rel));
-    char tmp[MAX_PATH] = {0};
-    DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
-    if (!tn || tn >= sizeof(tmp) - 32) return;
-    char* dst = tmp + tn;
-    for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
+static void RenderFileName(const Api* api, char* out, size_t cap) {
+  // Per-image status file: VacSafe-render-<base8>.txt. Shared filenames tear
+  // when several images are injected (each overwrites the other).
+  char rel[32];
+  vacsafe::str::CopyTo(vacsafe::str::SID_render_rel, rel, sizeof(rel));
+  char tmp[MAX_PATH] = {0};
+  DWORD tn = api->getTempPath(sizeof(tmp) - 48, tmp);
+  if (!tn || tn >= sizeof(tmp) - 48) { if (cap) out[0] = 0; return; }
+  char* dst = tmp + tn;
+  for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
+  *dst = 0;
+  // insert "-<base8>" before ".txt": find the dot
+  char* dot = tmp;
+  while (*dot && *dot != '.') ++dot;
+  if (*dot) {
+    char tail[16];
+    size_t tl = 0;
+    while (dot[tl] && tl + 1 < sizeof(tail)) { tail[tl] = dot[tl]; ++tl; }
+    tail[tl] = 0;
+    *dst++ = '-';
+    uint64_t v = (uint64_t)s_base;
+    const char* dig = "0123456789ABCDEF";
+    bool st = false;
+    for (int sh = 28; sh >= 0; sh -= 4) {
+      int d = (int)((v >> sh) & 0xF);
+      if (d || st || sh == 0) { st = true; *dst++ = dig[d]; }
+    }
+    for (size_t k = 0; tail[k]; ++k) *dst++ = tail[k];
     *dst = 0;
+  }
+  size_t i = 0;
+  for (; tmp[i] && i + 1 < cap; ++i) out[i] = tmp[i];
+  out[i] = 0;
+}
+
+static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn) {
+  __try {
+  char tmp[MAX_PATH] = {0};
+  RenderFileName(api, tmp, sizeof(tmp));
+  if (!tmp[0]) return;
     char out[128]{};
     size_t p = 0;
     // "base=0x.. hwnd=0x.. frames=N drawn=M": identifies which image writes.
@@ -199,14 +230,9 @@ static void WriteRenderStatusGLE(const Api* api, void* hwnd, int frames, int dra
   __try {
     WriteRenderStatus(api, hwnd, frames, drawn);
     // append " gle=N" by re-read + rewrite (diag only, runs once)
-    char rel[32];
-    vacsafe::str::CopyTo(vacsafe::str::SID_render_rel, rel, sizeof(rel));
     char tmp[MAX_PATH] = {0};
-    DWORD tn = api->getTempPath(sizeof(tmp) - 32, tmp);
-    if (!tn || tn >= sizeof(tmp) - 32) return;
-    char* dst = tmp + tn;
-    for (size_t k = 0; rel[k]; ++k) *dst++ = rel[k];
-    *dst = 0;
+    RenderFileName(api, tmp, sizeof(tmp));
+    if (!tmp[0]) return;
     char ob[160]{};
     size_t q = 0;
     HANDLE fr = api->createFile(tmp, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
