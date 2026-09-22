@@ -8,6 +8,7 @@ smoke_msg = [VacSafe] payload attached.
 proof_rel = VacSafe-cs2.txt
 esp_rel = VacSafe-esp.txt
 dbg_rel = VacSafe-dbg.txt
+render_rel = VacSafe-render.txt
 offsets_rel = VacSafe-offsets.ini
 api_createinterface = CreateInterface
 api_schemasys = SchemaSystem_001
@@ -52,6 +53,7 @@ t_n =  n=
 t_drawn =  drawn=
 t_skip =  skipped=
 t_ctl =  ctl=
+t_tag = VACSAFE
 n_cs2 = cs2/source2
 e_noschema = schemasystem.dll absent
 e_noci = CreateInterface missing in schemasystem
