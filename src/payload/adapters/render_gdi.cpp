@@ -172,7 +172,8 @@ static void RenderFileName(const Api* api, char* out, size_t cap) {
   out[i] = 0;
 }
 
-static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn) {
+static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn,
+                              bool showGle, uint32_t gle) {
   __try {
   char tmp[MAX_PATH] = {0};
   RenderFileName(api, tmp, sizeof(tmp));
@@ -207,6 +208,7 @@ static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn)
     const char* f = " frames=";
     while (*f && p + 1 < sizeof(out)) out[p++] = *f++;
     char nb[12]; int nn = 0, tv = frames;
+    if (tv < 0) { if (p + 1 < sizeof(out)) out[p++] = '-'; tv = -tv; }
     if (!tv) nb[nn++] = '0';
     while (tv > 0 && nn < 11) { nb[nn++] = (char)('0' + tv % 10); tv /= 10; }
     while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
@@ -216,6 +218,16 @@ static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn)
     if (!tv) nb[nn++] = '0';
     while (tv > 0 && nn < 11) { nb[nn++] = (char)('0' + tv % 10); tv /= 10; }
     while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
+    if (showGle) {
+      char gb[16];
+      vacsafe::str::CopyTo(vacsafe::str::SID_t_gle, gb, sizeof(gb));
+      for (size_t k = 0; gb[k] && p + 1 < sizeof(out); ++k) out[p++] = gb[k];
+      nn = 0;
+      uint32_t gv = gle;
+      if (!gv) nb[nn++] = '0';
+      while (gv > 0 && nn < 10) { nb[nn++] = (char)('0' + gv % 10); gv /= 10; }
+      while (nn > 0 && p + 1 < sizeof(out)) out[p++] = nb[--nn];
+    }
     if (p + 2 < sizeof(out)) { out[p++] = '\r'; out[p++] = '\n'; }
     out[p] = 0;
     HANDLE fh = api->createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -223,40 +235,6 @@ static void WriteRenderStatus(const Api* api, void* hwnd, int frames, int drawn)
     DWORD w = 0;
     api->writeFile(fh, out, (DWORD)p, &w, nullptr);
     api->close(fh);
-  } __except (EXCEPTION_EXECUTE_HANDLER) {}
-}
-
-static void WriteRenderStatusGLE(const Api* api, void* hwnd, int frames, int drawn, uint32_t gle) {
-  __try {
-    WriteRenderStatus(api, hwnd, frames, drawn);
-    // append " gle=N" by re-read + rewrite (diag only, runs once)
-    char tmp[MAX_PATH] = {0};
-    RenderFileName(api, tmp, sizeof(tmp));
-    if (!tmp[0]) return;
-    char ob[160]{};
-    size_t q = 0;
-    HANDLE fr = api->createFile(tmp, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (fr != INVALID_HANDLE_VALUE) {
-      DWORD r = 0;
-      api->readFile(fr, ob, (DWORD)sizeof(ob) - 24, &r, nullptr);
-      api->close(fr);
-      q = r;
-    }
-    char gb[16];
-    vacsafe::str::CopyTo(vacsafe::str::SID_t_gle, gb, sizeof(gb));
-    for (size_t k = 0; gb[k] && q + 1 < sizeof(ob); ++k) ob[q++] = gb[k];
-    char nb[12]; int nn = 0;
-    uint32_t v = gle;
-    if (!v) nb[nn++] = '0';
-    while (v > 0 && nn < 10) { nb[nn++] = (char)('0' + v % 10); v /= 10; }
-    while (nn > 0 && q + 1 < sizeof(ob)) ob[q++] = nb[--nn];
-    if (q + 2 < sizeof(ob)) { ob[q++] = '\r'; ob[q++] = '\n'; }
-    ob[q] = 0;
-    HANDLE fw = api->createFile(tmp, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (fw == INVALID_HANDLE_VALUE) return;
-    DWORD w = 0;
-    api->writeFile(fw, ob, (DWORD)q, &w, nullptr);
-    api->close(fw);
   } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
@@ -302,7 +280,7 @@ static DWORD WINAPI RenderThread(LPVOID p) {
   // Startup stages to render.txt (R1 resolve, R2 hwnd, then frames): pinpoints
   // silent early death (no markers = died before first status write).
   if (!g_gdi.Resolve()) {
-    if (s_api) WriteRenderStatus(s_api, nullptr, -1, 0);
+    if (s_api) WriteRenderStatus(s_api, nullptr, -1, 0, false, 0);
     return 1;
   }
   // find our game window once (first visible top-level of our pid)
@@ -310,7 +288,7 @@ static DWORD WINAPI RenderThread(LPVOID p) {
     // TEB.ClientId redacted in SDK headers; stable ABI offset 0x40 (UniqueProcess).
     uint32_t pid = *(volatile uint32_t*)((uint8_t*)NtCurrentTeb() + 0x40);
     g_gdi.enumWin(EnumCb, pid);
-    if (!s_hwnd && s_api) WriteRenderStatus(s_api, nullptr, -2, 0);
+    if (!s_hwnd && s_api) WriteRenderStatus(s_api, nullptr, -2, 0, false, 0);
     if (!s_hwnd) return 2;
   }
   // 60s at ~50ms: static overlay EVERY frame (independent of entities),
@@ -348,7 +326,7 @@ static DWORD WINAPI RenderThread(LPVOID p) {
       g_gdi.releaseDc(s_hwnd, hdc);
       ++s_frames;
       s_drawnTotal += drawnHere;
-      if ((t & 15) == 0 && s_api) WriteRenderStatus(s_api, s_hwnd, s_frames, s_drawnTotal);
+      if ((t & 15) == 0 && s_api) WriteRenderStatus(s_api, s_hwnd, s_frames, s_drawnTotal, false, 0);
     } __except (EXCEPTION_EXECUTE_HANDLER) { continue; }
   }
   return 0;
@@ -371,7 +349,7 @@ void RenderStart(const sdk::IGameAdapter* ad, sdk::GameContext* ctx, const Api* 
     void* f = nt::GetProcByHash(k32, 0x2082EAE3);
     if (f) gle = ((GetLastErrFn)f)();
   }
-  WriteRenderStatusGLE(api, h, -3, (int)tid, gle);
+  WriteRenderStatus(api, h, -3, (int)tid, true, gle);
   if (h && api->close) api->close(h);
 }
 
