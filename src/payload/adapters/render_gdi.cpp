@@ -3,6 +3,8 @@
 #include "peb.h"
 #include "strings.inc"
 #include "stealth.h"
+#include "swap_hook.h"
+#include "present_hook.h"
 #include "../api.h"
 #include <windows.h>
 #include <winternl.h>
@@ -403,6 +405,15 @@ void RenderStart(const sdk::IGameAdapter* ad, sdk::GameContext* ctx, const Api* 
   s_ctx = ctx;
   s_api = api;
   s_base = (uintptr_t)base;
+  // Prefer the DXGI Present hook (persistent pixels). GDI thread is fallback.
+  {
+    SwapHit hit{};
+    if (AcquireSwapchain(&hit) &&
+        InstallPresentHook(hit.swapchain, hit.vtable, hit.present, ad, ctx, api)) {
+      WriteRenderStatus(api, hit.swapchain, -4, hit.hits, false, 0);
+      return;
+    }
+  }
   DWORD tid = 0;
   HANDLE h = api->createThread(nullptr, 0, RenderThread, nullptr, 0, &tid);
   // R-3 marker (even on failure): proves whether the thread was ever created.

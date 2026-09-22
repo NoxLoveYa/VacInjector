@@ -14,6 +14,15 @@ void* SdkResolveVQ() {
   return nt::GetProcByHash(k32, 0x395269C2);
 }
 
+SIZE_T QueryMem(uintptr_t addr, void* mbi, size_t cap) {
+  static void* cachedVQ = nullptr;
+  if (!cachedVQ) cachedVQ = SdkResolveVQ();
+  if (!cachedVQ || !mbi || cap < sizeof(MEMORY_BASIC_INFORMATION)) return 0;
+  __try {
+    return ((VirtualQueryFn)cachedVQ)((LPCVOID)addr, (PMEMORY_BASIC_INFORMATION)mbi, cap);
+  } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+}
+
 size_t StrLen(const char* s, size_t cap) {
   size_t n = 0;
   if (!s) return 0;

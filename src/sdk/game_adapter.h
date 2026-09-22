@@ -63,6 +63,8 @@ struct IGameAdapter {
 // VirtualQuery (hashed, cached); __try remains as belt-and-braces only.
 typedef SIZE_T (WINAPI* VirtualQueryFn)(LPCVOID, PMEMORY_BASIC_INFORMATION, SIZE_T);
 void* SdkResolveVQ(); // sdk.cpp: hashed VirtualQuery address (CRT-free)
+// Raw VirtualQuery for region walks (swap RefSearch etc.). Returns bytes written.
+SIZE_T QueryMem(uintptr_t addr, void* mbi, size_t cap);
 inline bool CanRead(uintptr_t addr, size_t n) {
   static void* cachedVQ = nullptr;
   if (!cachedVQ) {
